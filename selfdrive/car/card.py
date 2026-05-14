@@ -162,6 +162,9 @@ class Car:
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
 
+    if hasattr(self.CI.CS, "openpilot_enabled"):
+      self.CI.CS.openpilot_enabled = self.sm['carControl'].enabled
+
     # Update carState from CAN
     CS = self.CI.update(can_list)
 
