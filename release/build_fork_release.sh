@@ -24,6 +24,20 @@ fi
 
 source "$DIR/identity.sh"
 
+echo "[-] Updating submodules T=$SECONDS"
+cd "$SOURCE_DIR"
+git submodule sync --recursive
+git submodule update --init --recursive
+
+for submodule in panda msgq_repo opendbc_repo rednose_repo teleoprtc_repo tinygrad_repo; do
+  expected_commit="$(git rev-parse "HEAD:$submodule")"
+  actual_commit="$(git -C "$submodule" rev-parse HEAD)"
+  if [ "$actual_commit" != "$expected_commit" ]; then
+    echo "Submodule $submodule is at $actual_commit, expected $expected_commit"
+    exit 1
+  fi
+done
+
 echo "[-] Setting up fork release repo T=$SECONDS"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -47,12 +61,12 @@ git add -f .
 git commit -a -m "openpilot v$VERSION fork release"
 
 export PYTHONPATH="$BUILD_DIR"
-op build
+op build -j"$(nproc)" --minimal
 
 if [ "$PANDA_DEBUG_BUILD" = "1" ]; then
-  scons panda/
+  scons -j"$(nproc)" panda/
 else
-  CERT=/data/pandaextra/certs/release RELEASE=1 scons panda/
+  CERT=/data/pandaextra/certs/release RELEASE=1 scons -j"$(nproc)" panda/
 fi
 
 if test "$(git submodule--helper list | wc -l)" -gt "0"; then
