@@ -23,6 +23,8 @@ from openpilot.system.version import get_build_metadata
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
+DEFAULT_TARGET_BRANCH = os.getenv("UPDATER_DEFAULT_BRANCH", "")
+IGNORE_DISABLE_UPDATES = os.getenv("UPDATER_IGNORE_DISABLE_UPDATES", "0") == "1"
 
 OVERLAY_UPPER = os.path.join(STAGING_ROOT, "upper")
 OVERLAY_METADATA = os.path.join(STAGING_ROOT, "metadata")
@@ -241,19 +243,25 @@ class Updater:
   def target_branch(self) -> str:
     b: str | None = self.params.get("UpdaterTargetBranch")
     if b is None:
-      b = self.get_branch(BASEDIR)
+      b = DEFAULT_TARGET_BRANCH or self.get_branch(BASEDIR)
     b = {
       ("tizi", "release3"): "release-tizi",
       ("tizi", "release3-staging"): "release-tizi-staging",
       ("mici", "release3"): "release-mici",
       ("mici", "release3-staging"): "release-mici-staging",
     }.get((HARDWARE.get_device_type(), b), b)
+
+    if len(self.branches) and b not in self.branches:
+      fallback_branch = self.get_branch(BASEDIR)
+      cloudlog.warning(f"update branch {b} not found in remote, falling back to current branch {fallback_branch}")
+      b = fallback_branch
+
     return b
 
   @property
   def update_ready(self) -> bool:
     consistent_file = Path(os.path.join(FINALIZED, ".overlay_consistent"))
-    if consistent_file.is_file():
+    if consistent_file.is_file() and self.target_branch in self.branches:
       hash_mismatch = self.get_commit_hash(BASEDIR) != self.branches[self.target_branch]
       branch_mismatch = self.get_branch(BASEDIR) != self.target_branch
       on_target_branch = self.get_branch(FINALIZED) == self.target_branch
@@ -262,7 +270,7 @@ class Updater:
 
   @property
   def update_available(self) -> bool:
-    if os.path.isdir(OVERLAY_MERGED) and len(self.branches) > 0:
+    if os.path.isdir(OVERLAY_MERGED) and len(self.branches) > 0 and self.target_branch in self.branches:
       hash_mismatch = self.get_commit_hash(OVERLAY_MERGED) != self.branches[self.target_branch]
       branch_mismatch = self.get_branch(OVERLAY_MERGED) != self.target_branch
       return hash_mismatch or branch_mismatch
@@ -368,7 +376,11 @@ class Updater:
     cur_branch = self.get_branch(OVERLAY_MERGED)
     cur_commit = self.get_commit_hash(OVERLAY_MERGED)
     new_branch = self.target_branch
-    new_commit = self.branches[new_branch]
+    new_commit = self.branches.get(new_branch)
+    if new_commit is None:
+      cloudlog.warning(f"no remote branch found for updates: {new_branch}")
+      return
+
     if (cur_branch, cur_commit) != (new_branch, new_commit):
       cloudlog.info(f"update available, {cur_branch} ({str(cur_commit)[:7]}) -> {new_branch} ({str(new_commit)[:7]})")
     else:
@@ -417,9 +429,11 @@ class Updater:
 def main() -> None:
   params = Params()
 
-  if params.get_bool("DisableUpdates"):
+  if params.get_bool("DisableUpdates") and not IGNORE_DISABLE_UPDATES:
     cloudlog.warning("updates are disabled by the DisableUpdates param")
     exit(0)
+  elif params.get_bool("DisableUpdates"):
+    cloudlog.warning("DisableUpdates is set, but fork updater is enabled by UPDATER_IGNORE_DISABLE_UPDATES")
 
   with open(LOCK_FILE, 'w') as ov_lock_fd:
     try:
@@ -479,7 +493,9 @@ def main() -> None:
         last_fetch = params.get("UpdaterLastFetchTime")
         timed_out = last_fetch is None or (datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - last_fetch > datetime.timedelta(days=3))
         user_requested_fetch = wait_helper.user_request == UserRequest.FETCH
-        if params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
+        if updater.target_branch not in updater.branches:
+          cloudlog.warning(f"skipping fetch, update branch {updater.target_branch} is not available remotely")
+        elif params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
           cloudlog.info("skipping fetch, connection metered")
         elif wait_helper.user_request == UserRequest.CHECK:
           cloudlog.info("skipping fetch, only checking")

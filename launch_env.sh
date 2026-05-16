@@ -20,3 +20,8 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
+
+# Fork updater defaults. These keep the stock overlay-based updater flow, but
+# point it at this fork's device branch even when upstream updates are disabled.
+export UPDATER_DEFAULT_BRANCH="${UPDATER_DEFAULT_BRANCH:-avante-md-dev-mici}"
+export UPDATER_IGNORE_DISABLE_UPDATES="${UPDATER_IGNORE_DISABLE_UPDATES:-1}"
