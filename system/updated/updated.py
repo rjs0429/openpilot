@@ -24,7 +24,6 @@ from openpilot.system.version import get_build_metadata
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
 DEFAULT_TARGET_BRANCH = os.getenv("UPDATER_DEFAULT_BRANCH", "")
-IGNORE_DISABLE_UPDATES = os.getenv("UPDATER_IGNORE_DISABLE_UPDATES", "0") == "1"
 
 OVERLAY_UPPER = os.path.join(STAGING_ROOT, "upper")
 OVERLAY_METADATA = os.path.join(STAGING_ROOT, "metadata")
@@ -429,11 +428,9 @@ class Updater:
 def main() -> None:
   params = Params()
 
-  if params.get_bool("DisableUpdates") and not IGNORE_DISABLE_UPDATES:
+  if params.get_bool("DisableUpdates"):
     cloudlog.warning("updates are disabled by the DisableUpdates param")
     exit(0)
-  elif params.get_bool("DisableUpdates"):
-    cloudlog.warning("DisableUpdates is set, but fork updater is enabled by UPDATER_IGNORE_DISABLE_UPDATES")
 
   with open(LOCK_FILE, 'w') as ov_lock_fd:
     try:
