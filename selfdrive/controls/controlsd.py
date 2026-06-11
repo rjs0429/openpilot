@@ -26,7 +26,7 @@ LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
-LOW_SPEED_LATERAL_MAX = 25 * CV.KPH_TO_MS
+LOW_SPEED_LATERAL_MAX = 30 * CV.KPH_TO_MS
 LOW_SPEED_LANE_PROB_ENTER = 0.60
 LOW_SPEED_LANE_PROB_EXIT = 0.40
 LOW_SPEED_LANE_WIDTH_MIN = 2.7
@@ -35,6 +35,8 @@ LOW_SPEED_LANE_CONFIRM_FRAMES = int(0.3 / DT_CTRL)
 LOW_SPEED_LANE_DROP_FRAMES = int(0.1 / DT_CTRL)
 LOW_SPEED_TURN_ANGLE = 90.0
 LOW_SPEED_BLINKER_TURN_ANGLE = 45.0
+
+BLINKER_SUSPEND_FRAMES = int(1.0 / DT_CTRL)
 
 
 class Controls:
@@ -57,6 +59,8 @@ class Controls:
     self.low_speed_lat_ready = False
     self.low_speed_lane_good_frames = 0
     self.low_speed_lane_bad_frames = 0
+    self.blinker_no_lc_frames = 0
+    self.blinker_lat_suspended = False
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -124,6 +128,25 @@ class Controls:
 
     return self.low_speed_lat_ready
 
+  def _blinker_lat_allowed(self, CS, model_v2) -> bool:
+    blinker_on = CS.leftBlinker or CS.rightBlinker
+    lc_active = model_v2.meta.laneChangeState != LaneChangeState.off
+
+    if lc_active:
+      self.blinker_no_lc_frames = 0
+      self.blinker_lat_suspended = False
+      return True
+
+    if blinker_on:
+      self.blinker_no_lc_frames += 1
+      if self.blinker_no_lc_frames >= BLINKER_SUSPEND_FRAMES:
+        self.blinker_lat_suspended = True
+    else:
+      self.blinker_no_lc_frames = 0
+      self.blinker_lat_suspended = False
+
+    return not self.blinker_lat_suspended
+
   def update(self):
     self.sm.update(15)
     if self.sm.updated["liveCalibration"]:
@@ -160,11 +183,13 @@ class Controls:
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
     low_speed_lat_allowed = self._low_speed_lat_allowed(CS, model_v2)
+    blinker_lat_allowed = self._blinker_lat_allowed(CS, model_v2)
     CC.latActive = (self.sm['selfdriveState'].active and
                     not CS.steerFaultTemporary and
                     not CS.steerFaultPermanent and
                     (not standstill or self.CP.steerAtStandstill) and
-                    low_speed_lat_allowed)
+                    low_speed_lat_allowed and
+                    blinker_lat_allowed)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
     actuators = CC.actuators

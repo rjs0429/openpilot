@@ -502,6 +502,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.ldw, AudibleAlert.prompt, 3.),
   },
 
+  EventName.forwardWatchAlert: {
+    ET.PERMANENT: Alert(
+      "Departure Alert",
+      "Forward Situation Changed",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.5),
+  },
+
   # ********** events only containing alerts that display while engaged **********
 
   EventName.steerTempUnavailableSilent: {

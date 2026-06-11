@@ -10,7 +10,28 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+struct ForwardWatchState @0x81c2f05a394cf4af {
+  alertRequested  @0 :Bool;
+  watchState      @1 :WatchState;
+  triggerReason   @2 :TriggerReason;
+  stopDuration    @3 :Float32;
+  driverAttentive @4 :Bool;
+
+  enum WatchState {
+    idle            @0;
+    stoppedCounting @1;
+    monitoring      @2;
+    triggered       @3;
+    alerting        @4;
+    cooldown        @5;
+  }
+
+  enum TriggerReason {
+    none           @0;
+    leadDeparted   @1;
+    signalStraight @2;
+    signalLeft     @3;
+  }
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {
