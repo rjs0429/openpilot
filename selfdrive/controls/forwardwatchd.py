@@ -156,8 +156,9 @@ class ForwardWatch:
     fw = msg.forwardWatchState
 
     fw.alertRequested  = self._alert_requested
-    fw.watchState      = self._state          # int value maps to capnp WatchState enum
-    fw.triggerReason   = self._trigger_reason  # int value maps to capnp TriggerReason enum
+    # pycapnp rejects IntEnum instances for enum fields; plain int is required
+    fw.watchState      = int(self._state)
+    fw.triggerReason   = int(self._trigger_reason)
     fw.stopDuration    = self._stop_timer
     fw.driverAttentive = self._driver_attentive
 
@@ -178,7 +179,7 @@ def main() -> None:
   fw = ForwardWatch()
 
   while True:
-    sm.update(0)
+    sm.update()
 
     if not sm.updated['modelV2']:
       continue
