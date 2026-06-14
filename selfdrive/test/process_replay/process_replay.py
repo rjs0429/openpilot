@@ -428,6 +428,8 @@ def selfdrived_config_callback(params, cfg, lr):
 
   cfg.pubs = set(cfg.pubs) - sub_keys
 
+  params.put_bool("ForwardWatchEnabled", True)
+
 
 CONFIGS = [
   ProcessConfig(

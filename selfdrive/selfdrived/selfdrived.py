@@ -94,6 +94,7 @@ class SelfdriveD:
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
+    self.forward_watch_enabled = self.params.get_bool("ForwardWatchEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
 
     car_recognized = self.CP.brand != 'mock'
@@ -256,7 +257,7 @@ class SelfdriveD:
         self.events.add(EventName.calibrationInvalid)
 
     # Forward watch alert (forward situation change notification)
-    if self.sm['forwardWatchState'].alertRequested:
+    if self.forward_watch_enabled and self.sm.alive['forwardWatchState'] and self.sm['forwardWatchState'].alertRequested:
       self.events.add(EventName.forwardWatchAlert)
 
     # Lane departure warning
@@ -537,6 +538,7 @@ class SelfdriveD:
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
+      self.forward_watch_enabled = self.params.get_bool("ForwardWatchEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)

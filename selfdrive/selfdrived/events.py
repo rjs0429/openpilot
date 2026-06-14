@@ -504,8 +504,8 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.forwardWatchAlert: {
     ET.PERMANENT: Alert(
-      "Departure Alert",
-      "Forward Situation Changed",
+      "Ready to Go",
+      "Road ahead is clear",
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.5),
   },

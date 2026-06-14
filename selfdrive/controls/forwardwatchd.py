@@ -11,7 +11,7 @@ from openpilot.common.swaglog import cloudlog
 STANDSTILL_CONFIRM_S       = 3.0   # seconds of continuous standstill before monitoring
 LEAD_DEPART_SPEED_MS       = 0.5   # m/s — vLeadK above which lead is considered departing
 ALERT_DELAY_ATTENTIVE_S    = 1.0   # seconds to wait before alerting an attentive driver
-ALERT_DELAY_DISTRACTED_S   = 0.5   # seconds to wait before alerting an inattentive driver
+ALERT_DELAY_DISTRACTED_S   = 0.2   # seconds to wait before alerting an inattentive driver
 COOLDOWN_S                 = 3.0   # seconds to suppress re-trigger after an alert
 
 # modelV2.confidence minimum for shouldStop transition to be trusted
@@ -149,6 +149,10 @@ class ForwardWatch:
       self._cooldown_timer += DT_MDL
       if self._cooldown_timer >= COOLDOWN_S:
         self._state = _State.IDLE
+
+    # Clear trigger reason once back to idle so stale reasons aren't published
+    if self._state == _State.IDLE:
+      self._trigger_reason = _TriggerReason.NONE
 
   def publish(self, pm) -> None:
     msg = messaging.new_message('forwardWatchState')
