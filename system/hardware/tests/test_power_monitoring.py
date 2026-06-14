@@ -12,7 +12,7 @@ def mock_time_monotonic():
   return ssb
 
 TEST_DURATION_S = 50
-GOOD_VOLTAGE = 12 * 1e3
+GOOD_VOLTAGE = 12.4 * 1e3
 VOLTAGE_BELOW_PAUSE_CHARGING = (VBATT_PAUSE_CHARGING - 1) * 1e3
 
 def pm_patch(mocker, name, value, constant=False):
