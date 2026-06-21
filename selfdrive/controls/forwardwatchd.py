@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from enum import IntEnum
 
-from cereal import log, messaging
+from cereal import car, log, messaging
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 
@@ -10,9 +11,10 @@ from openpilot.common.swaglog import cloudlog
 
 STANDSTILL_CONFIRM_S       = 3.0   # seconds of continuous standstill before monitoring
 LEAD_DEPART_SPEED_MS       = 0.5   # m/s — vLeadK above which lead is considered departing
-ALERT_DELAY_ATTENTIVE_S    = 1.0   # seconds to wait before alerting an attentive driver
+ALERT_DELAY_ATTENTIVE_S    = 0.7   # seconds to wait before alerting an attentive driver
 ALERT_DELAY_DISTRACTED_S   = 0.2   # seconds to wait before alerting an inattentive driver
-COOLDOWN_S                 = 3.0   # seconds to suppress re-trigger after an alert
+COOLDOWN_S                 = 1.0   # seconds to suppress re-trigger after an alert
+MONITORING_TIMEOUT_S       = 5 * 60  # maximum duration of one stopped monitoring session
 
 # modelV2.confidence minimum for shouldStop transition to be trusted
 SHOULD_STOP_MIN_CONFIDENCE = log.ModelDataV2.ConfidenceClass.yellow
@@ -27,6 +29,7 @@ class _State(IntEnum):
   TRIGGERED        = 3
   ALERTING         = 4
   COOLDOWN         = 5
+  TIMED_OUT        = 6
 
 
 # ── Trigger reason enum (matches custom.capnp ForwardWatchState.TriggerReason) ─
@@ -41,9 +44,12 @@ class _TriggerReason(IntEnum):
 # ── Core logic ────────────────────────────────────────────────────────────────
 
 class ForwardWatch:
-  def __init__(self) -> None:
+  def __init__(self, params=None) -> None:
+    self.params = params if params is not None else Params()
+
     self._state          = _State.IDLE
     self._stop_timer     = 0.0
+    self._session_timer  = 0.0
     self._trigger_timer  = 0.0
     self._cooldown_timer = 0.0
 
@@ -69,6 +75,15 @@ class ForwardWatch:
     self._should_stop_prev = model.action.shouldStop
     return cleared
 
+  def _reset(self) -> None:
+    self._state          = _State.IDLE
+    self._stop_timer     = 0.0
+    self._session_timer  = 0.0
+    self._trigger_timer  = 0.0
+    self._cooldown_timer = 0.0
+    self._trigger_reason  = _TriggerReason.NONE
+    self._alert_requested = False
+
   # ── Public API ─────────────────────────────────────────────────────────────
 
   def update(self, sm) -> None:
@@ -78,6 +93,7 @@ class ForwardWatch:
     dm    = sm['driverMonitoringState']
 
     stopped       = cs.standstill
+    parked        = cs.gearShifter == car.CarState.GearShifter.park
     has_lead      = radar.leadOne.status
     left_blinker  = cs.leftBlinker
     right_blinker = cs.rightBlinker
@@ -88,6 +104,23 @@ class ForwardWatch:
     self._driver_attentive = self._is_attentive(dm)
     self._alert_requested  = False
 
+    # The settings toggle is the feature's only enable gate. Park always
+    # cancels the current session, regardless of the state it was in.
+    if not self.params.get_bool("ForwardWatchEnabled") or parked:
+      self._reset()
+      return
+
+    # The five-minute limit applies to the whole monitoring session, including
+    # trigger delay and active alerting. Timeout wins over a trigger occurring
+    # on the same model frame.
+    if self._state in (_State.MONITORING, _State.TRIGGERED, _State.ALERTING):
+      self._session_timer += DT_MDL
+      if self._session_timer >= MONITORING_TIMEOUT_S:
+        self._state = _State.TIMED_OUT
+        self._trigger_reason = _TriggerReason.NONE
+        cloudlog.info("forwardwatchd: monitoring timed out")
+        return
+
     if self._state == _State.IDLE:
       if stopped:
         self._state      = _State.STOPPED_COUNTING
@@ -95,16 +128,17 @@ class ForwardWatch:
 
     elif self._state == _State.STOPPED_COUNTING:
       if not stopped:
-        self._state = _State.IDLE
+        self._reset()
       else:
         self._stop_timer += DT_MDL
         if self._stop_timer >= STANDSTILL_CONFIRM_S:
-          self._state = _State.MONITORING
+          self._state         = _State.MONITORING
+          self._session_timer = 0.0
           cloudlog.info("forwardwatchd: monitoring activated")
 
     elif self._state == _State.MONITORING:
       if not stopped:
-        self._state = _State.IDLE
+        self._reset()
       else:
         triggered = False
 
@@ -128,7 +162,7 @@ class ForwardWatch:
 
     elif self._state == _State.TRIGGERED:
       if not stopped:
-        self._state = _State.IDLE
+        self._reset()
       else:
         self._trigger_timer += DT_MDL
         delay = ALERT_DELAY_ATTENTIVE_S if self._driver_attentive else ALERT_DELAY_DISTRACTED_S
@@ -148,11 +182,13 @@ class ForwardWatch:
     elif self._state == _State.COOLDOWN:
       self._cooldown_timer += DT_MDL
       if self._cooldown_timer >= COOLDOWN_S:
-        self._state = _State.IDLE
+        self._reset()
 
-    # Clear trigger reason once back to idle so stale reasons aren't published
-    if self._state == _State.IDLE:
-      self._trigger_reason = _TriggerReason.NONE
+    elif self._state == _State.TIMED_OUT:
+      # Do not re-arm while the same stopped session continues. Moving, Park,
+      # or toggling the feature off resets the state and permits a new session.
+      if not stopped:
+        self._reset()
 
   def publish(self, pm) -> None:
     msg = messaging.new_message('forwardWatchState')

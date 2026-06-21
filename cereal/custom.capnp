@@ -24,6 +24,7 @@ struct ForwardWatchState @0x81c2f05a394cf4af {
     triggered       @3;
     alerting        @4;
     cooldown        @5;
+    timedOut        @6;
   }
 
   enum TriggerReason {

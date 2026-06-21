@@ -17,7 +17,7 @@ class TogglesLayoutMici(NavScroller):
     self._experimental_btn = BigParamControl("experimental mode", "ExperimentalMode")
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     ldw_toggle = BigParamControl("lane departure warnings", "IsLdwEnabled")
-    forward_watch_toggle = BigParamControl("departure alert", "ForwardWatchEnabled")
+    forward_watch_toggle = BigParamControl("forward departure alert", "ForwardWatchEnabled")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM")
     record_front = BigParamControl("record & upload driver camera", "RecordFront", toggle_callback=restart_needed_callback)
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
