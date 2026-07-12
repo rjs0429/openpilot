@@ -27,6 +27,7 @@ LaneChangeDirection = log.LaneChangeDirection
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 LOW_SPEED_LATERAL_MAX = 30 * CV.KPH_TO_MS
+LOW_SPEED_LATERAL_MIN = 20 * CV.KPH_TO_MS
 LOW_SPEED_LANE_PROB_ENTER = 0.60
 LOW_SPEED_LANE_PROB_EXIT = 0.40
 LOW_SPEED_LANE_WIDTH_MIN = 2.7
@@ -57,6 +58,7 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.low_speed_lat_ready = False
+    self.low_speed_lat_latched = False
     self.low_speed_lane_good_frames = 0
     self.low_speed_lane_bad_frames = 0
     self.blinker_no_lc_frames = 0
@@ -92,7 +94,12 @@ class Controls:
     self.low_speed_lane_bad_frames = 0
 
   def _low_speed_lat_allowed(self, CS, model_v2) -> bool:
-    if self.CP.notCar or CS.vEgo > LOW_SPEED_LATERAL_MAX:
+    if CS.vEgo > LOW_SPEED_LATERAL_MAX:
+      self.low_speed_lat_latched = True
+    elif CS.vEgo < LOW_SPEED_LATERAL_MIN:
+      self.low_speed_lat_latched = False
+
+    if self.CP.notCar or self.low_speed_lat_latched:
       self._reset_low_speed_lat()
       return True
 
