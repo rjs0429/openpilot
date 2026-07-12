@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from collections import deque
 from enum import IntEnum
 
 from cereal import car, log, messaging
@@ -11,13 +12,25 @@ from openpilot.common.swaglog import cloudlog
 
 STANDSTILL_CONFIRM_S       = 3.0   # seconds of continuous standstill before monitoring
 LEAD_DEPART_SPEED_MS       = 0.5   # m/s — vLeadK above which lead is considered departing
-ALERT_DELAY_ATTENTIVE_S    = 0.7   # seconds to wait before alerting an attentive driver
+ALERT_DELAY_ATTENTIVE_S    = 1.0   # seconds to wait before alerting an attentive driver
 ALERT_DELAY_DISTRACTED_S   = 0.2   # seconds to wait before alerting an inattentive driver
 COOLDOWN_S                 = 1.0   # seconds to suppress re-trigger after an alert
 MONITORING_TIMEOUT_S       = 5 * 60  # maximum duration of one stopped monitoring session
 
 # modelV2.confidence minimum for shouldStop transition to be trusted
 SHOULD_STOP_MIN_CONFIDENCE = log.ModelDataV2.ConfidenceClass.yellow
+
+# ── Lead-departure discrimination ──────────────────────────────────────────────
+# leadOne is vision-only here, so vLeadK is an unsigned speed magnitude: a car
+# crossing laterally reads high vLeadK and used to false-trigger. A real departure
+# is confirmed in two stages (see _update_lead): ARM, then FIRE.
+LEAD_ARM_S           = 1.0    # s a lead must sit stopped in-path before it can arm
+LEAD_ZONE_M          = 1.5    # m — |yRel| forward-zone half-width (arm and fire)
+LEAD_LAT_MAX_MS      = 0.7    # m/s — max windowed lateral speed for a forward departure
+LEAD_LAT_WINDOW_N    = 6      # frames (~0.3 s) over which the lateral-speed max is taken
+LEAD_ARM_PROB_MIN    = 0.90   # leadOne.modelProb floor to trust a lead
+LEAD_ARM_DREL_MIN_M  = 2.0    # m — reject sub-2m vision artifacts
+LEAD_ARM_DREL_MAX_M  = 30.0   # m — reject distant, noisy-range leads
 
 
 # ── Internal state enum (matches custom.capnp ForwardWatchState.WatchState) ──
@@ -58,6 +71,11 @@ class ForwardWatch:
     self._alert_requested   = False
     self._driver_attentive  = True
 
+    # Lead ARM/FIRE state (see _update_lead); _lead_arm is a leaky latch reservoir.
+    self._lead_armed        = False
+    self._lead_arm          = 0.0
+    self._lead_yrel         = deque(maxlen=LEAD_LAT_WINDOW_N + 1)
+
   # ── Private helpers ────────────────────────────────────────────────────────
 
   @staticmethod
@@ -84,6 +102,69 @@ class ForwardWatch:
     self._trigger_reason  = _TriggerReason.NONE
     self._alert_requested = False
 
+    self._lead_armed = False
+    self._lead_arm   = 0.0
+    self._lead_yrel.clear()
+
+  def _update_lead(self, radar, has_lead) -> bool:
+    """Two-stage LEAD-departure test replacing the raw vLeadK threshold.
+
+    ARM:  latch once a lead has sat stopped, in-path and high-confidence for
+          LEAD_ARM_S (latch freezes through the departure, tolerates brief dropout).
+    FIRE: while armed, require the lead to move off *forward* — in-path with low
+          windowed lateral velocity. Returns the MONITORING branch's lead_departed.
+    """
+    if not has_lead:
+      self._lead_yrel.clear()
+      if self._lead_armed:                 # brief dropout: decay, keep latch ~LEAD_ARM_S
+        self._lead_arm -= DT_MDL
+        if self._lead_arm <= 0.0:
+          self._lead_arm   = 0.0
+          self._lead_armed = False
+      else:
+        self._lead_arm = 0.0               # continuity broken before latching
+      return False
+
+    lead = radar.leadOne
+    self._lead_yrel.append(lead.yRel)
+
+    est = (lead.vLeadK < LEAD_DEPART_SPEED_MS
+           and abs(lead.yRel) < LEAD_ZONE_M
+           and lead.modelProb >= LEAD_ARM_PROB_MIN
+           and LEAD_ARM_DREL_MIN_M < lead.dRel < LEAD_ARM_DREL_MAX_M)
+    departing = lead.vLeadK > LEAD_DEPART_SPEED_MS
+
+    if not self._lead_armed:               # ARM: accrue continuous stopped-in-path time
+      if est:
+        self._lead_arm += DT_MDL
+        if self._lead_arm >= LEAD_ARM_S:
+          self._lead_armed = True
+          self._lead_arm   = LEAD_ARM_S
+      else:
+        self._lead_arm = 0.0
+    else:
+      if departing:
+        pass                               # freeze the latch through the departure
+      elif est:
+        self._lead_arm = LEAD_ARM_S
+      else:
+        self._lead_arm -= DT_MDL           # lead gone / drifted off while slow
+        if self._lead_arm <= 0.0:
+          self._lead_arm   = 0.0
+          self._lead_armed = False
+
+    if not self._lead_armed:               # FIRE: forward departure only
+      return False
+
+    lat_max = 0.0
+    if len(self._lead_yrel) >= 2:
+      ys = self._lead_yrel
+      lat_max = max(abs(ys[i] - ys[i - 1]) for i in range(1, len(ys))) / DT_MDL
+
+    return (departing
+            and abs(lead.yRel) < LEAD_ZONE_M
+            and lat_max < LEAD_LAT_MAX_MS)
+
   # ── Public API ─────────────────────────────────────────────────────────────
 
   def update(self, sm) -> None:
@@ -99,7 +180,6 @@ class ForwardWatch:
     right_blinker = cs.rightBlinker
 
     signal_cleared = self._check_signal_cleared(model)
-    lead_departed  = has_lead and radar.leadOne.vLeadK > LEAD_DEPART_SPEED_MS
 
     self._driver_attentive = self._is_attentive(dm)
     self._alert_requested  = False
@@ -131,6 +211,7 @@ class ForwardWatch:
         self._reset()
       else:
         self._stop_timer += DT_MDL
+        self._update_lead(radar, has_lead)   # warm the lead ARM latch before monitoring
         if self._stop_timer >= STANDSTILL_CONFIRM_S:
           self._state         = _State.MONITORING
           self._session_timer = 0.0
@@ -140,11 +221,12 @@ class ForwardWatch:
       if not stopped:
         self._reset()
       else:
+        fire = self._update_lead(radar, has_lead)
         triggered = False
 
         if has_lead:
           # Lead-car mode: signal state is ignored; react to lead departure only
-          if lead_departed:
+          if fire:
             triggered = True
             self._trigger_reason = _TriggerReason.LEAD
         else:
