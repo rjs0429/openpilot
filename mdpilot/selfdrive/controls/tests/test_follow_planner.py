@@ -6,6 +6,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.mdpilot.selfdrive.controls.lib.coast import coast_decel
 from openpilot.mdpilot.selfdrive.controls.lib.follow_planner import (COAST_MIN_DWELL, LEAD_EXIT_TIME, MIN_GAP_M, MIN_GAP_T,
                                                                      REACTION_T, FollowPlanner, LeadFilter, required_decel)
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
 SERVICES = ['carState', 'carControl', 'controlsState', 'selfdriveState', 'liveParameters', 'radarState', 'modelV2']
 
@@ -23,6 +24,7 @@ class Scene:
   def __init__(self, v_ego=22., v_cruise=25., pitch=0.):
     self.msgs = {s: messaging.new_message(s) for s in SERVICES}
     self.cs.vEgo = v_ego
+    self.cs.vCruise = v_cruise * 3.6
     self.cs.cruiseState.speed = v_cruise
     self.msgs['carControl'].carControl.orientationNED = [0., pitch, 0.]
     self.msgs['selfdriveState'].selfdriveState.personality = log.LongitudinalPersonality.standard
@@ -43,10 +45,23 @@ class Scene:
     return {s: getattr(m.as_reader(), s) for s, m in self.msgs.items()}
 
 
-def run(planner, scene, seconds):
+class Follower:
+  """plannerd and its follow extension, as they run together on the car."""
+
+  def __init__(self):
+    CP = make_cp()
+    self.planner = LongitudinalPlanner(CP)
+    self.follow = FollowPlanner(CP)
+
+  def update(self, view):
+    self.planner.update(view)
+    return self.follow.update(view, self.planner)
+
+
+def run(follower, scene, seconds):
   out = None
   for _ in range(round(seconds / DT_MDL)):
-    out = planner.update(scene.view())
+    out = follower.update(scene.view())
   return out
 
 
@@ -123,13 +138,13 @@ class TestFollowPlanner:
 
   def test_inactive_without_a_set_speed(self):
     scene = Scene(v_cruise=0.)
-    out = run(FollowPlanner(make_cp()), scene, 1.)
+    out = run(Follower(), scene, 1.)
     assert not out.active
     assert not out.coast_request
 
   def test_free_road_follows_the_set_speed(self):
     scene = Scene(v_ego=25., v_cruise=25.)
-    out = run(FollowPlanner(make_cp()), scene, 2.)
+    out = run(Follower(), scene, 2.)
     assert out.active
     assert abs(out.v_target - 25.) < 0.5
     assert not out.coast_request
@@ -137,13 +152,13 @@ class TestFollowPlanner:
 
   def test_target_never_exceeds_the_set_speed(self):
     scene = Scene(v_ego=20., v_cruise=25.)
-    out = run(FollowPlanner(make_cp()), scene, 2.)
+    out = run(Follower(), scene, 2.)
     assert out.v_target <= 25.
 
   def test_slower_lead_requests_a_coast(self):
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(70., 20.)
-    out = run(FollowPlanner(make_cp()), scene, 1.5)
+    out = run(Follower(), scene, 1.5)
     assert out.lead_limited
     assert out.coast_request
     assert out.v_target < 25.
@@ -151,14 +166,14 @@ class TestFollowPlanner:
   def test_matched_lead_at_distance_holds_speed(self):
     scene = Scene(v_ego=22., v_cruise=25.)
     scene.set_lead(45., 22.)
-    out = run(FollowPlanner(make_cp()), scene, 2.)
+    out = run(Follower(), scene, 2.)
     assert not out.coast_request
     assert out.alert_level == 0
 
   def test_fast_approach_alerts(self):
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(40., 18.)
-    out = run(FollowPlanner(make_cp()), scene, 1.)
+    out = run(Follower(), scene, 1.)
     assert out.alert_level >= 1
     assert out.coast_request
 
@@ -174,54 +189,54 @@ class TestFollowPlanner:
   def test_imminent_collision_is_level_two(self):
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(20., 12.)
-    out = run(FollowPlanner(make_cp()), scene, 0.5)
+    out = run(Follower(), scene, 0.5)
     assert out.alert_level == 2
 
   def test_coast_released_once_the_lead_pulls_away(self):
-    planner = FollowPlanner(make_cp())
+    follower = Follower()
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(70., 20.)
-    assert run(planner, scene, 1.5).coast_request
+    assert run(follower, scene, 1.5).coast_request
     scene.cs.vEgo = 20.
     scene.set_lead(90., 26.)
-    out = run(planner, scene, COAST_MIN_DWELL + 1.5)
+    out = run(follower, scene, COAST_MIN_DWELL + 1.5)
     assert not out.coast_request
 
   def test_lost_lead_holds_the_target_until_it_is_gone(self):
-    planner = FollowPlanner(make_cp())
+    follower = Follower()
     scene = Scene(v_ego=20., v_cruise=25.)
     scene.set_lead(35., 20.)
-    held = run(planner, scene, 2.).v_target
+    held = run(follower, scene, 2.).v_target
     scene.set_lead(None)
-    out = run(planner, scene, 0.5)
+    out = run(follower, scene, 0.5)
     assert out.lead_valid
     assert out.v_target <= held + 1e-3
-    out = run(planner, scene, LEAD_EXIT_TIME[0] + 1.)
+    out = run(follower, scene, LEAD_EXIT_TIME[0] + 1.)
     assert not out.lead_valid
     assert out.v_target > held
 
   def test_close_but_steady_following_is_not_a_collision(self):
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(28., 24.)
-    out = run(FollowPlanner(make_cp()), scene, 2.)
+    out = run(Follower(), scene, 2.)
     assert out.alert_level < 2
 
   def test_collision_alert_does_not_flicker(self):
-    planner = FollowPlanner(make_cp())
+    follower = Follower()
     scene = Scene(v_ego=25., v_cruise=25.)
     scene.set_lead(20., 12.)
-    assert run(planner, scene, 0.5).alert_level == 2
+    assert run(follower, scene, 0.5).alert_level == 2
     scene.set_lead(60., 25.)
-    assert run(planner, scene, 0.5).alert_level == 2
-    assert run(planner, scene, 1.0).alert_level < 2
+    assert run(follower, scene, 0.5).alert_level == 2
+    assert run(follower, scene, 1.0).alert_level < 2
 
   def test_slow_closing_on_a_steep_downhill_does_not_prompt(self):
     scene = Scene(v_ego=25., v_cruise=25., pitch=-0.05)
     scene.set_lead(75., 24.3)
-    out = run(FollowPlanner(make_cp()), scene, 3.)
+    out = run(Follower(), scene, 3.)
     assert out.alert_level == 0
 
   def test_downhill_lowers_coasting(self):
-    flat = run(FollowPlanner(make_cp()), Scene(v_ego=25.), 1.).a_coast_limit
-    downhill = run(FollowPlanner(make_cp()), Scene(v_ego=25., pitch=-0.04), 3.).a_coast_limit
+    flat = run(Follower(), Scene(v_ego=25.), 1.).a_coast_limit
+    downhill = run(Follower(), Scene(v_ego=25., pitch=-0.04), 3.).a_coast_limit
     assert downhill < flat

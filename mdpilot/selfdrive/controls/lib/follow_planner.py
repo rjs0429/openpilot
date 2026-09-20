@@ -1,17 +1,17 @@
 """Lead following for a stock cruise that openpilot can only steer through its buttons.
 
-The upstream longitudinal planner runs unmodified on its own instance. Its view of the world is adjusted in
-two places: the cruise speed is the driver's set speed, and it replans from the measured state every frame
-because the ECM, not openpilot, produces the acceleration. On top of the plan this decides when to cancel
-into a coast and when coasting will not be enough.
+This reads the upstream longitudinal plan, which already targets the driver's set speed because card
+reports it as the cruise speed, and decides from it when to cancel into a coast and when coasting will not
+be enough. Buttons reach the ECM far slower than a throttle would, so the acceleration is taken further
+along the planned trajectory than upstream takes it.
 """
 import math
 from dataclasses import dataclass
 
-from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.controls.lib.longitudinal_planner import CONTROL_N_T_IDX
 from openpilot.mdpilot.selfdrive.controls.lib.coast import coast_decel
 
 ACTUATOR_DELAY = 1.0
@@ -42,33 +42,6 @@ COLLISION_HOLD = 1.0
 COLLISION_TTC = 2.5
 COLLISION_HEADWAY = 0.4
 COLLISION_PROB = 0.9
-
-
-class _Override:
-  def __init__(self, msg, **fields):
-    self._msg = msg
-    self._fields = fields
-
-  def __getattr__(self, name):
-    if name in self._fields:
-      return self._fields[name]
-    return getattr(self._msg, name)
-
-
-class _PlannerInputs:
-  """The planner's SubMaster view with the follow set speed and a permanent reset."""
-
-  def __init__(self, sm, v_cruise_kph: float):
-    self._sm = sm
-    self._v_cruise_kph = v_cruise_kph
-
-  def __getitem__(self, name):
-    msg = self._sm[name]
-    if name == 'carState':
-      return _Override(msg, vCruise=self._v_cruise_kph)
-    if name == 'selfdriveState':
-      return _Override(msg, enabled=False, experimentalMode=False)
-    return msg
 
 
 def _lowpass(x: float, target: float, tau: float, dt: float) -> float:
@@ -148,9 +121,7 @@ def required_decel(v_ego: float, d_rel: float, v_lead: float) -> float:
 
 class FollowPlanner:
   def __init__(self, CP):
-    CP_follow = CP.as_builder()
-    CP_follow.longitudinalActuatorDelay = ACTUATOR_DELAY
-    self.planner = LongitudinalPlanner(CP_follow.as_reader())
+    self.CP = CP
     self.lead = LeadFilter()
     self.out = FollowOutput()
     self.grade_pct = 0.
@@ -171,7 +142,7 @@ class FollowPlanner:
     self._collision_hold = 0.
     self._v_target_prev = 0.
 
-  def update(self, sm, dt: float = DT_MDL) -> FollowOutput:
+  def update(self, sm, planner, dt: float = DT_MDL) -> FollowOutput:
     CS = sm['carState']
     v_cruise = CS.cruiseState.speed
     self._update_grade(sm['carControl'], dt)
@@ -180,13 +151,13 @@ class FollowPlanner:
       self.out = FollowOutput(grade=self.grade_pct)
       return self.out
 
-    self.planner.update(_PlannerInputs(sm, v_cruise * CV.MS_TO_KPH))
     lead_msg = sm['radarState'].leadOne
     self.lead.update(lead_msg, CS.vEgo, dt)
 
-    v_target = min(max(float(self.planner.v_desired_trajectory[-1]), 0.), v_cruise)
-    a_target = float(self.planner.output_a_target)
-    lead_limited = self.planner.mpc.source in (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
+    v_target = min(max(float(planner.v_desired_trajectory[-1]), 0.), v_cruise)
+    a_target = float(get_accel_from_plan(planner.v_desired_trajectory, planner.a_desired_trajectory, CONTROL_N_T_IDX,
+                                         action_t=ACTUATOR_DELAY, vEgoStopping=self.CP.vEgoStopping)[0])
+    lead_limited = planner.mpc.source in (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
     if self.lead.present and not lead_msg.status:
       v_target = min(v_target, self._v_target_prev)
       a_target = min(a_target, 0.)
@@ -203,7 +174,7 @@ class FollowPlanner:
     ttc = self.lead.d_rel / (v_ego - self.lead.v_lead) if closing else math.inf
     collision = (closing and lead_msg.status and self.lead.prob >= COLLISION_PROB and
                  (ttc < COLLISION_TTC or self.lead.d_rel < COLLISION_HEADWAY * v_ego))
-    fcw = bool(self.planner.fcw)
+    fcw = bool(planner.fcw)
     self._collision_hold = COLLISION_HOLD if (collision or fcw) else max(0., self._collision_hold - dt)
     alert_level = 2 if self._collision_hold > 0. else (1 if over_coast else 0)
 
