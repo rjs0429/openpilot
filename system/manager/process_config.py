@@ -6,6 +6,7 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.mdpilot.system.manager.process_config import procs as mdpilot_procs
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -120,5 +121,7 @@ procs = [
   PythonProcess("webjoystick", "tools.bodyteleop.web", notcar),
   PythonProcess("joystick", "tools.joystick.joystick_control", and_(joystick, iscar)),
 ]
+
+procs += mdpilot_procs
 
 managed_processes = {p.name: p for p in procs}

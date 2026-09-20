@@ -67,6 +67,7 @@ _services: dict[str, tuple] = {
   "driverStateV2": (True, 20., 10),
   "driverMonitoringState": (True, 20., 10),
   "forwardWatchState": (True, 20., 10),
+  "followPlanMD": (True, 20., 10),
   "wideRoadEncodeIdx": (False, 20., 1),
   "wideRoadCameraState": (True, 20., 20),
   "drivingModelData": (True, 20., 10),

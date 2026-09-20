@@ -35,7 +35,22 @@ struct ForwardWatchState @0x81c2f05a394cf4af {
   }
 }
 
-struct CustomReserved1 @0xaedffd8f31e7b55d {
+# Avante MD lead following on the stock cruise (mdpilot followplannerd). Speeds in m/s on the vEgo scale.
+struct FollowPlanMD @0xaedffd8f31e7b55d {
+  active @0 :Bool;
+  vCruise @1 :Float32;
+  vTarget @2 :Float32;
+  aTarget @3 :Float32;
+  coastRequest @4 :Bool;
+  alertLevel @5 :UInt8;
+  leadLimited @6 :Bool;
+  leadValid @7 :Bool;
+  dRel @8 :Float32;
+  vLead @9 :Float32;
+  aRequired @10 :Float32;
+  aCoastLimit @11 :Float32;
+  grade @12 :Float32;
+  fcw @13 :Bool;
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {
