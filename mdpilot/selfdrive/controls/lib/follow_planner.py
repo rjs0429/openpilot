@@ -16,11 +16,15 @@ from openpilot.mdpilot.selfdrive.controls.lib.coast import coast_decel
 
 ACTUATOR_DELAY = 1.0
 
-COAST_ENTER_ACCEL = -0.15
+COAST_ENTER_ACCEL = -0.40
 COAST_EXIT_ACCEL = -0.03
 COAST_ENTER_TIME = 0.5
-COAST_EXIT_TIME = 1.0
-COAST_MIN_DWELL = 3.0
+COAST_EXIT_TIME = 0.3
+COAST_MIN_DWELL = 1.5
+# Speed still to shed for the lead. Below this the set speed can trim it away without dropping the cruise.
+COAST_ENTER_DEFICIT = 2.2
+# Coasting on past the lead's own speed only loses ground, whatever the plan still asks for.
+COAST_LEAD_MARGIN = 0.5
 
 LEAD_NEAR_M = 50.
 LEAD_ENTER_PROB = (0.5, 0.9)  # near, far
@@ -178,7 +182,7 @@ class FollowPlanner:
     self._collision_hold = COLLISION_HOLD if (collision or fcw) else max(0., self._collision_hold - dt)
     alert_level = 2 if self._collision_hold > 0. else (1 if over_coast else 0)
 
-    self._update_coast(a_target, lead_limited, alert_level > 0, dt)
+    self._update_coast(a_target, lead_limited, alert_level > 0, v_ego, v_target, dt)
 
     self.out = FollowOutput(
       active=True, v_cruise=v_cruise, v_target=v_target, a_target=a_target, coast_request=self._coast,
@@ -187,18 +191,21 @@ class FollowPlanner:
     )
     return self.out
 
-  def _update_coast(self, a_target: float, lead_limited: bool, alerting: bool, dt: float) -> None:
+  def _update_coast(self, a_target: float, lead_limited: bool, alerting: bool, v_ego: float, v_target: float,
+                    dt: float) -> None:
     self._coast_dwell += dt
+    caught = v_ego <= v_target or (self.lead.present and v_ego <= self.lead.v_lead + COAST_LEAD_MARGIN)
     if not self._coast:
       if alerting and lead_limited:
         self._set_coast(True)
         return
-      want = lead_limited and a_target < COAST_ENTER_ACCEL
+      want = (lead_limited and not caught and
+              (a_target < COAST_ENTER_ACCEL or v_ego - v_target > COAST_ENTER_DEFICIT))
       self._coast_timer = self._coast_timer + dt if want else 0.
       if self._coast_timer >= COAST_ENTER_TIME - 1e-6 and self._coast_dwell >= COAST_MIN_DWELL:
         self._set_coast(True)
     else:
-      release = (a_target > COAST_EXIT_ACCEL or not lead_limited) and not alerting
+      release = (a_target > COAST_EXIT_ACCEL or caught or not lead_limited) and not alerting
       self._coast_timer = self._coast_timer + dt if release else 0.
       if self._coast_timer >= COAST_EXIT_TIME - 1e-6 and self._coast_dwell >= COAST_MIN_DWELL:
         self._set_coast(False)

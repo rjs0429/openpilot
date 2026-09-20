@@ -202,6 +202,22 @@ class TestFollowPlanner:
     out = run(follower, scene, COAST_MIN_DWELL + 1.5)
     assert not out.coast_request
 
+  def test_coast_released_once_the_car_is_down_to_the_lead(self):
+    follower = Follower()
+    scene = Scene(v_ego=25., v_cruise=25.)
+    scene.set_lead(70., 20.)
+    assert run(follower, scene, 1.5).coast_request
+    scene.cs.vEgo = 20.
+    out = run(follower, scene, COAST_MIN_DWELL + 0.5)
+    assert not out.coast_request
+
+  def test_lead_barely_slower_is_trimmed_not_coasted(self):
+    scene = Scene(v_ego=23., v_cruise=25.)
+    scene.set_lead(55., 22.)
+    out = run(Follower(), scene, 4.)
+    assert not out.coast_request
+    assert out.v_target < 25.
+
   def test_lost_lead_holds_the_target_until_it_is_gone(self):
     follower = Follower()
     scene = Scene(v_ego=20., v_cruise=25.)
