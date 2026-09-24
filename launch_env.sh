@@ -21,6 +21,4 @@ fi
 
 export STAGING_ROOT="/data/safe_staging"
 
-# Fork updater defaults. These keep the stock overlay-based updater flow, but
-# point it at this fork's device branch.
-export UPDATER_DEFAULT_BRANCH="${UPDATER_DEFAULT_BRANCH:-avante-md-dev-mici}"
+export FINGERPRINT="${FINGERPRINT:-AVANTE_MD_2012}"

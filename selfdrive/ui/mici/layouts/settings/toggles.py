@@ -5,6 +5,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMulti
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.mdpilot import hooks as mdpilot_hooks
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -17,7 +18,6 @@ class TogglesLayoutMici(NavScroller):
     self._experimental_btn = BigParamControl("experimental mode", "ExperimentalMode")
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     ldw_toggle = BigParamControl("lane departure warnings", "IsLdwEnabled")
-    forward_watch_toggle = BigParamControl("forward departure alert", "ForwardWatchEnabled")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM")
     record_front = BigParamControl("record & upload driver camera", "RecordFront", toggle_callback=restart_needed_callback)
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
@@ -28,7 +28,6 @@ class TogglesLayoutMici(NavScroller):
       self._experimental_btn,
       is_metric_toggle,
       ldw_toggle,
-      forward_watch_toggle,
       always_on_dm_toggle,
       record_front,
       record_mic,
@@ -40,7 +39,6 @@ class TogglesLayoutMici(NavScroller):
       ("ExperimentalMode", self._experimental_btn),
       ("IsMetric", is_metric_toggle),
       ("IsLdwEnabled", ldw_toggle),
-      ("ForwardWatchEnabled", forward_watch_toggle),
       ("AlwaysOnDM", always_on_dm_toggle),
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
@@ -56,6 +54,7 @@ class TogglesLayoutMici(NavScroller):
       gui_app.set_show_fps(True)
 
     ui_state.add_engaged_transition_callback(self._update_toggles)
+    mdpilot_hooks.extend_toggles(self)
 
   def _update_state(self):
     super()._update_state()

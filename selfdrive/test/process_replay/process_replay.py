@@ -428,8 +428,6 @@ def selfdrived_config_callback(params, cfg, lr):
 
   cfg.pubs = set(cfg.pubs) - sub_keys
 
-  params.put_bool("ForwardWatchEnabled", True)
-
 
 CONFIGS = [
   ProcessConfig(
@@ -439,7 +437,7 @@ CONFIGS = [
       "longitudinalPlan", "livePose", "liveDelay", "liveParameters", "radarState", "modelV2",
       "driverCameraState", "roadCameraState", "wideRoadCameraState", "managerState", "liveTorqueParameters",
       "accelerometer", "gyroscope", "carOutput", "gpsLocationExternal", "gpsLocation", "controlsState",
-      "carControl", "driverAssistance", "alertDebug", "audioFeedback", "forwardWatchState",
+      "carControl", "driverAssistance", "alertDebug", "audioFeedback",
     ],
     subs=["selfdriveState", "onroadEvents"],
     ignore=["logMonoTime"],

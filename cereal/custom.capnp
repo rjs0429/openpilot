@@ -35,7 +35,7 @@ struct ForwardWatchState @0x81c2f05a394cf4af {
   }
 }
 
-# Avante MD lead following on the stock cruise (mdpilot followplannerd). Speeds in m/s on the vEgo scale.
+# Avante MD lead following on the stock cruise, published from plannerd by mdpilot. Speeds in m/s on the vEgo scale.
 struct FollowPlanMD @0xaedffd8f31e7b55d {
   active @0 :Bool;
   vCruise @1 :Float32;

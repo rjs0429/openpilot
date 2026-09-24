@@ -6,7 +6,7 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
-from openpilot.mdpilot.system.manager.process_config import procs as mdpilot_procs
+from openpilot.mdpilot import hooks as mdpilot_hooks
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -106,7 +106,6 @@ procs = [
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
-  PythonProcess("forwardwatchd", "selfdrive.controls.forwardwatchd", iscar),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
@@ -122,6 +121,6 @@ procs = [
   PythonProcess("joystick", "tools.joystick.joystick_control", and_(joystick, iscar)),
 ]
 
-procs += mdpilot_procs
+procs = mdpilot_hooks.apply_processes(procs)
 
 managed_processes = {p.name: p for p in procs}

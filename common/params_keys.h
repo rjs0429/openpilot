@@ -42,7 +42,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ExperimentalModeConfirmed", {PERSISTENT, BOOL}},
     {"FirmwareQueryDone", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ForcePowerDown", {PERSISTENT, BOOL}},
-    {"ForwardWatchEnabled", {PERSISTENT, BOOL}},
     {"GitBranch", {PERSISTENT, STRING}},
     {"GitCommit", {PERSISTENT, STRING}},
     {"GitCommitDate", {PERSISTENT, STRING}},
@@ -131,4 +130,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UsbGpuPresent", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"UsbGpuCompiled", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"Version", {PERSISTENT, STRING}},
+
+    // mdpilot (fork)
+    {"ForwardWatchEnabled", {PERSISTENT, BOOL}},
+    {"MdpilotStatus", {CLEAR_ON_MANAGER_START, STRING}},
 };
