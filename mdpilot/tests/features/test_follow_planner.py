@@ -6,7 +6,8 @@ from cereal import car, log
 from openpilot.common.realtime import DT_MDL
 from openpilot.mdpilot.features.follow_cruise.coast import coast_decel
 from openpilot.mdpilot.features.follow_cruise.planner import (COAST_MIN_DWELL, LEAD_EXIT_TIME, MIN_GAP_M, MIN_GAP_T, REACTION_T,
-                                                              FollowPlanner, LeadFilter, required_decel)
+                                                              FollowPlanner, LeadFilter, envelope_speed, needed_decel,
+                                                              required_decel)
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
 SERVICES = ['carState', 'carControl', 'controlsState', 'selfdriveState', 'liveParameters', 'radarState', 'modelV2']
@@ -17,7 +18,6 @@ def make_cp():
   CP.brand = 'avante_md'
   CP.steerRatio = 14.65
   CP.wheelbase = 2.7
-  CP.vEgoStopping = 0.5
   return CP.as_reader()
 
 
@@ -90,6 +90,21 @@ class TestRequiredDecel(unittest.TestCase):
     # 5 m/s closing, 20 m of room after the minimum gap and the reaction time
     d_rel = 20. + (MIN_GAP_M + MIN_GAP_T * 15.) + 5. * REACTION_T
     assert abs(required_decel(20., d_rel, 15.) - 25. / 40.) < 1e-6
+
+
+class TestEnvelope(unittest.TestCase):
+  def test_no_room_leaves_the_lead_speed(self):
+    self.assertAlmostEqual(20., envelope_speed(20., 0., 0.3))
+
+  def test_more_room_allows_a_faster_approach(self):
+    assert envelope_speed(20., 40., 0.3) > envelope_speed(20., 10., 0.3) > 20.
+
+  def test_inside_the_gap_falls_below_the_lead(self):
+    assert envelope_speed(20., -10., 0.3) < 20.
+
+  def test_the_envelope_needs_exactly_its_deceleration(self):
+    v = envelope_speed(20., 30., 0.25)
+    self.assertAlmostEqual(0.25, needed_decel(v, 20., 30.))
 
 
 class TestLeadFilter(unittest.TestCase):
@@ -257,6 +272,53 @@ class TestFollowPlanner(unittest.TestCase):
     flat = run(Follower(), Scene(v_ego=25.), 1.).a_coast_limit
     downhill = run(Follower(), Scene(v_ego=25., pitch=-0.04), 3.).a_coast_limit
     assert downhill < flat
+
+
+  def test_slower_lead_far_ahead_is_trimmed_before_it_is_coasted(self):
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    scene.set_lead(65., 25.)
+    out = run(Follower(), scene, 3.)
+    assert out.lead_limited
+    assert not out.coast_request
+    assert out.v_target < 27.8
+
+  def test_coast_once_the_lead_needs_most_of_the_coasting(self):
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    scene.set_lead(53., 25.)
+    out = run(Follower(), scene, 2.)
+    assert out.coast_request
+    assert out.alert_level == 0
+
+  def test_relaxed_personality_coasts_earlier(self):
+    for personality, coasts in ((log.LongitudinalPersonality.standard, False), (log.LongitudinalPersonality.relaxed, True)):
+      with self.subTest(personality=personality):
+        scene = Scene(v_ego=27.8, v_cruise=27.8)
+        scene.msgs['selfdriveState'].selfdriveState.personality = personality
+        scene.set_lead(65., 25.)
+        assert run(Follower(), scene, 2.).coast_request == coasts
+
+  def test_slow_closing_inside_the_gap_is_trimmed_not_coasted(self):
+    scene = Scene(v_ego=23., v_cruise=25.)
+    scene.set_lead(25., 22.)
+    out = run(Follower(), scene, 3.)
+    assert not out.coast_request
+    assert out.v_target < 22.
+
+  def test_coast_released_once_trimming_can_take_over(self):
+    follower = Follower()
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    scene.set_lead(53., 25.)
+    assert run(follower, scene, 2.).coast_request
+    scene.set_lead(110., 25.)
+    out = run(follower, scene, COAST_MIN_DWELL + 0.5)
+    assert not out.coast_request
+
+  def test_steady_at_the_following_gap_holds_the_lead_speed(self):
+    scene = Scene(v_ego=22., v_cruise=25.)
+    scene.set_lead(6. + 1.45 * 22., 22.)
+    out = run(Follower(), scene, 3.)
+    assert not out.coast_request
+    self.assertAlmostEqual(22., out.v_target, delta=0.1)
 
 
 class TestWithPortCarParams(unittest.TestCase):

@@ -48,16 +48,17 @@ PROCESSES = ("card", "plannerd", "selfdrived", "torqued", "hardwared")
 SERVICES = ("carState", "carControl", "radarState", "modelV2", "driverMonitoringState", "followPlanMD", "forwardWatchState")
 
 # services the follow planner reads from plannerd's own SubMaster
-PLANNERD_SERVICES = ("carState", "carControl", "radarState", "modelV2")
+PLANNERD_SERVICES = ("carState", "carControl", "radarState", "modelV2", "selfdriveState")
 
 # (schema struct path, fields the fork reads or writes)
 FIELDS = (
-  ("car.CarParams", ("brand", "notCar", "vEgoStopping")),
+  ("car.CarParams", ("brand", "notCar")),
   ("car.CarState", ("vEgo", "standstill", "gearShifter", "leftBlinker", "rightBlinker", "steeringAngleDeg", "vCruise",
                     "vCruiseCluster", "cruiseState")),
   ("car.CarState.CruiseState", ("speed", "speedCluster")),
   ("car.CarControl", ("orientationNED",)),
   ("log.RadarState", ("leadOne",)),
+  ("log.SelfdriveState", ("personality",)),
   ("log.RadarState.LeadData", ("status", "dRel", "vLead", "vLeadK", "yRel", "modelProb")),
   ("log.ModelDataV2", ("laneLines", "laneLineProbs", "meta", "action", "confidence")),
   ("log.XYZTData", ("y",)),
@@ -196,11 +197,11 @@ def check_planner() -> None:
   from opendbc.car.avante_md.interface import CarInterface
   from openpilot.mdpilot.upstream import planner
   CP = CarInterface.get_non_essential_params("AVANTE_MD_2012").as_reader()
+  from cereal import log
   lp = planner.LongitudinalPlanner(CP)
-  assert isinstance(planner.final_speed(lp), float)
-  assert isinstance(planner.accel_at(lp, 1.0, planner.v_ego_stopping(CP)), float)
-  assert isinstance(planner.lead_limited(lp), bool)
   assert isinstance(planner.fcw(lp), bool)
+  for personality in log.LongitudinalPersonality.schema.enumerants.values():
+    assert planner.follow_time(personality) > 0.
 
 
 def check_car_controller() -> None:

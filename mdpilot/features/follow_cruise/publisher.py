@@ -21,6 +21,8 @@ def fill_plan(msg, out: FollowOutput) -> None:
   plan.aCoastLimit = float(out.a_coast_limit)
   plan.grade = float(out.grade)
   plan.fcw = out.fcw
+  plan.aNeeded = float(out.a_needed)
+  plan.followGap = float(out.follow_gap)
 
 
 class FollowPublisher:

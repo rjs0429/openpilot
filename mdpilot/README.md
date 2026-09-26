@@ -81,8 +81,7 @@ code (`docs/SAFETY.md`). Old `libsafety/tmp*` builds of a changed header break i
 Moving to v0.11.2, where upstream code lives under `openpilot/`:
 - move `mdpilot/` to `openpilot/mdpilot/`, drop the symlink and the `pyproject.toml` hook, and re-add the
   `process_config.py` hook lines in `openpilot/system/manager/` (git leaves the root copy as a modify/delete);
-- in `upstream/` and the tests: `openpilot.cereal` and `openpilot.common.hardware` imports; `get_accel_from_plan` takes
-  no `vEgoStopping` and returns a number, and `CarParams.vEgoStopping` is deprecated (`upstream/planner.py`, contract
-  `FIELDS` and `check_planner`); leads use `present` instead of `status` (`upstream.lead_present`, contract `FIELDS`);
+- in `upstream/` and the tests: `openpilot.cereal` and `openpilot.common.hardware` imports; leads use `present` instead
+  of `status` (`upstream.lead_present`, contract `FIELDS`);
 - remove the `# noqa: TID251` markers;
 - in the port: `FwQueryConfig` needs `fw_version_regex`, and `CarState.brake` is gone.

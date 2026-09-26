@@ -51,6 +51,8 @@ struct FollowPlanMD @0xaedffd8f31e7b55d {
   aCoastLimit @11 :Float32;
   grade @12 :Float32;
   fcw @13 :Bool;
+  aNeeded @14 :Float32;
+  followGap @15 :Float32;
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

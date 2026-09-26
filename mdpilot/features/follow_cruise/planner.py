@@ -1,9 +1,10 @@
 """Lead following for a stock cruise that openpilot can only steer through its buttons.
 
-This reads the upstream longitudinal plan, which already targets the driver's set speed because card
-reports it as the cruise speed, and decides from it when to cancel into a coast and when coasting will not
-be enough. Buttons reach the ECM far slower than a throttle would, so the acceleration is taken further
-along the planned trajectory than upstream takes it.
+The cruise slows the car only by closing the throttle, a few tenths of m/s^2 that depend on speed and grade.
+The target speed is therefore the fastest the car may close in on the lead while a share of that coasting
+still brings it down to the lead's speed at the following distance: the set speed is trimmed down to it, and
+once the lead needs most of what coasting gives, the cruise is canceled into a coast. The upstream plan is
+still solved alongside for its collision warning.
 """
 import math
 from dataclasses import dataclass
@@ -12,16 +13,27 @@ from openpilot.mdpilot.features.follow_cruise.coast import coast_decel
 from openpilot.mdpilot.upstream import DT_MDL, lead_present
 from openpilot.mdpilot.upstream import planner as upstream_planner
 
+# Buttons, the ECM and the throttle take about this long to answer.
 ACTUATOR_DELAY = 1.0
+STOP_GAP_M = 6.
 
-COAST_ENTER_ACCEL = -0.40
-COAST_EXIT_ACCEL = -0.03
+# Shares of the coasting deceleration: the set speed is trimmed to ask for at most TRIM_SHARE of it, a coast
+# starts once the lead needs COAST_SHARE and ends once it needs no more than RELEASE_SHARE.
+TRIM_SHARE = 0.35
+COAST_SHARE = 0.7
+RELEASE_SHARE = 0.2
+# Closing slower than this is trimmed away by the set speed, never coasted.
+COAST_MIN_CLOSING = 1.4
+# Inside the following distance the target falls below the lead's speed by this much per metre.
+GAP_RECOVERY = 0.1
+TARGET_RISE_TAU = 2.0
+ACCEL_TAU = 2.0
+ACCEL_MAX = 0.5
+
 COAST_ENTER_TIME = 0.5
 COAST_EXIT_TIME = 0.3
 COAST_MIN_DWELL = 1.5
-# Speed still to shed for the lead. Below this the set speed can trim it away without dropping the cruise.
-COAST_ENTER_DEFICIT = 2.2
-# Coasting on past the lead's own speed only loses ground, whatever the plan still asks for.
+# Coasting on past the lead's own speed only loses ground.
 COAST_LEAD_MARGIN = 0.5
 
 LEAD_NEAR_M = 50.
@@ -108,6 +120,8 @@ class FollowOutput:
   a_coast_limit: float = 0.
   grade: float = 0.
   fcw: bool = False
+  a_needed: float = 0.
+  follow_gap: float = 0.
 
 
 def required_decel(v_ego: float, d_rel: float, v_lead: float) -> float:
@@ -119,6 +133,31 @@ def required_decel(v_ego: float, d_rel: float, v_lead: float) -> float:
   if budget <= 0.:
     return math.inf
   return dv ** 2 / (2. * budget)
+
+
+def following_gap(v_lead: float, t_follow: float) -> float:
+  return STOP_GAP_M + t_follow * v_lead
+
+
+def closing_room(v_ego: float, d_rel: float, v_lead: float, gap: float) -> float:
+  """Distance left for falling back to the lead's speed before the following gap, once the actuators answer."""
+  return d_rel - gap - max(0., v_ego - v_lead) * ACTUATOR_DELAY
+
+
+def needed_decel(v_ego: float, v_lead: float, room: float) -> float:
+  dv = v_ego - v_lead
+  if dv <= 0.:
+    return 0.
+  if room <= 0.:
+    return math.inf
+  return dv ** 2 / (2. * room)
+
+
+def envelope_speed(v_lead: float, room: float, decel: float) -> float:
+  """Fastest speed from which decelerating at `decel` gets down to the lead's speed within `room`."""
+  if room >= 0.:
+    return v_lead + math.sqrt(2. * decel * room)
+  return max(0., v_lead + GAP_RECOVERY * room)
 
 
 class FollowPlanner:
@@ -133,7 +172,7 @@ class FollowPlanner:
     self._coast_dwell = COAST_MIN_DWELL
     self._decel_timer = 0.
     self._collision_hold = 0.
-    self._v_target_prev = 0.
+    self._v_target: float | None = None
 
   def reset(self) -> None:
     self.lead = LeadFilter()
@@ -142,7 +181,7 @@ class FollowPlanner:
     self._coast_dwell = COAST_MIN_DWELL
     self._decel_timer = 0.
     self._collision_hold = 0.
-    self._v_target_prev = 0.
+    self._v_target = None
 
   def update(self, sm, planner, dt: float = DT_MDL) -> FollowOutput:
     CS = sm['carState']
@@ -153,22 +192,30 @@ class FollowPlanner:
       self.out = FollowOutput(grade=self.grade_pct)
       return self.out
 
-    lead_msg = sm['radarState'].leadOne
-    self.lead.update(lead_msg, CS.vEgo, dt)
-
-    v_target = min(max(upstream_planner.final_speed(planner), 0.), v_cruise)
-    a_target = upstream_planner.accel_at(planner, ACTUATOR_DELAY, upstream_planner.v_ego_stopping(self.CP))
-    lead_limited = upstream_planner.lead_limited(planner)
-    if self.lead.present and not lead_present(lead_msg):
-      v_target = min(v_target, self._v_target_prev)
-      a_target = min(a_target, 0.)
-      lead_limited = True
-    self._v_target_prev = v_target
-
     v_ego = CS.vEgo
+    lead_msg = sm['radarState'].leadOne
+    self.lead.update(lead_msg, v_ego, dt)
+    lead = self.lead.present
     a_coast = coast_decel(v_ego, self.grade_pct)
-    a_required = required_decel(v_ego, self.lead.d_rel, self.lead.v_lead) if self.lead.present else 0.
 
+    gap = following_gap(self.lead.v_lead, upstream_planner.follow_time(sm['selfdriveState'].personality)) if lead else 0.
+    room = closing_room(v_ego, self.lead.d_rel, self.lead.v_lead, gap) if lead else math.inf
+    a_needed = needed_decel(v_ego, self.lead.v_lead, room) if lead else 0.
+
+    v_goal = v_cruise
+    if lead:
+      v_goal = min(v_goal, envelope_speed(self.lead.v_lead, room, TRIM_SHARE * a_coast))
+      if not lead_present(lead_msg) and self._v_target is not None:
+        v_goal = min(v_goal, self._v_target)
+    lead_limited = v_goal < v_cruise
+    if self._v_target is None or v_goal < self._v_target:
+      self._v_target = v_goal
+    else:
+      self._v_target = _lowpass(self._v_target, v_goal, TARGET_RISE_TAU, dt)
+    v_target = self._v_target
+    a_target = max(-a_coast, min(ACCEL_MAX, (v_target - v_ego) / ACCEL_TAU))
+
+    a_required = required_decel(v_ego, self.lead.d_rel, self.lead.v_lead) if lead else 0.
     self._decel_timer = self._decel_timer + dt if a_required > max(a_coast, ALERT_MIN_DECEL) else 0.
     over_coast = self._decel_timer >= ALERT_DECEL_TIME - 1e-6
     closing = self.lead.present and v_ego > self.lead.v_lead
@@ -179,30 +226,29 @@ class FollowPlanner:
     self._collision_hold = COLLISION_HOLD if (collision or fcw) else max(0., self._collision_hold - dt)
     alert_level = 2 if self._collision_hold > 0. else (1 if over_coast else 0)
 
-    self._update_coast(a_target, lead_limited, alert_level > 0, v_ego, v_target, dt)
+    self._update_coast(lead, a_needed / a_coast, v_ego, alert_level > 0, dt)
 
     self.out = FollowOutput(
       active=True, v_cruise=v_cruise, v_target=v_target, a_target=a_target, coast_request=self._coast,
-      alert_level=alert_level, lead_limited=lead_limited, lead_valid=self.lead.present, d_rel=self.lead.d_rel,
+      alert_level=alert_level, lead_limited=lead_limited, lead_valid=lead, d_rel=self.lead.d_rel,
       v_lead=self.lead.v_lead, a_required=min(a_required, 10.), a_coast_limit=a_coast, grade=self.grade_pct, fcw=fcw,
+      a_needed=min(a_needed, 10.), follow_gap=gap,
     )
     return self.out
 
-  def _update_coast(self, a_target: float, lead_limited: bool, alerting: bool, v_ego: float, v_target: float,
-                    dt: float) -> None:
+  def _update_coast(self, lead: bool, share: float, v_ego: float, alerting: bool, dt: float) -> None:
     self._coast_dwell += dt
-    caught = v_ego <= v_target or (self.lead.present and v_ego <= self.lead.v_lead + COAST_LEAD_MARGIN)
+    caught = not lead or v_ego <= self.lead.v_lead + COAST_LEAD_MARGIN
     if not self._coast:
-      if alerting and lead_limited:
+      if alerting and lead:
         self._set_coast(True)
         return
-      want = (lead_limited and not caught and
-              (a_target < COAST_ENTER_ACCEL or v_ego - v_target > COAST_ENTER_DEFICIT))
+      want = lead and v_ego - self.lead.v_lead >= COAST_MIN_CLOSING and share >= COAST_SHARE
       self._coast_timer = self._coast_timer + dt if want else 0.
       if self._coast_timer >= COAST_ENTER_TIME - 1e-6 and self._coast_dwell >= COAST_MIN_DWELL:
         self._set_coast(True)
     else:
-      release = (a_target > COAST_EXIT_ACCEL or caught or not lead_limited) and not alerting
+      release = (caught or share <= RELEASE_SHARE) and not alerting
       self._coast_timer = self._coast_timer + dt if release else 0.
       if self._coast_timer >= COAST_EXIT_TIME - 1e-6 and self._coast_dwell >= COAST_MIN_DWELL:
         self._set_coast(False)
