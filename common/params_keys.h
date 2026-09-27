@@ -133,5 +133,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // mdpilot (fork)
     {"ForwardWatchEnabled", {PERSISTENT, BOOL}},
+    {"FollowCruiseEnabled", {PERSISTENT, BOOL, "1"}},
     {"MdpilotStatus", {CLEAR_ON_MANAGER_START, STRING}},
 };

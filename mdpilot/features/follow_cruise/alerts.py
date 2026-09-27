@@ -4,7 +4,8 @@ All alerts are permanent so they show whether or not steering is engaged. The co
 upstream forward collision warning; the others mirror the steering saturation prompt.
 """
 from openpilot.mdpilot import manifest
-from openpilot.mdpilot.upstream import DT_CTRL, messaging
+from openpilot.mdpilot.features.follow_cruise.toggle import following
+from openpilot.mdpilot.upstream import DT_CTRL, Params, messaging
 from openpilot.mdpilot.upstream.alerts import AlertSize, AlertStatus, AudibleAlert, EventName, Priority, VisualAlert, is_mici, \
                                                permanent_alert
 
@@ -20,8 +21,10 @@ def _prompt(name: str, text: tuple[str, str], mici_text: tuple[str, str]):
 
 class FollowAlerts:
   @classmethod
-  def create(cls, CP):
-    return cls() if manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND else None
+  def create(cls, CP, params=None):
+    if not (manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND):
+      return None
+    return cls() if following(params if params is not None else Params()) else None
 
   def __init__(self):
     self.sm = messaging.SubMaster(['followPlanMD'])

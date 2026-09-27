@@ -50,6 +50,7 @@ HOOKS = (
   ("cereal/services.py", '"forwardWatchState": (True, 20., 10),'),
   ("cereal/services.py", '"followPlanMD": (True, 20., 10),'),
   ("common/params_keys.h", '{"ForwardWatchEnabled", {PERSISTENT, BOOL}},'),
+  ("common/params_keys.h", '{"FollowCruiseEnabled", {PERSISTENT, BOOL, "1"}},'),
   ("common/params_keys.h", '{"MdpilotStatus", {CLEAR_ON_MANAGER_START, STRING}},'),
   ("system/manager/process_config.py", "from openpilot.mdpilot import hooks as mdpilot_hooks"),
   ("system/manager/process_config.py", "procs = mdpilot_hooks.apply_processes(procs)"),

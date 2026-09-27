@@ -2,7 +2,8 @@
 trajectory, and publishes followPlanMD next to the upstream longitudinal plan."""
 from openpilot.mdpilot import manifest
 from openpilot.mdpilot.features.follow_cruise.planner import FollowOutput, FollowPlanner
-from openpilot.mdpilot.upstream import messaging
+from openpilot.mdpilot.features.follow_cruise.toggle import following
+from openpilot.mdpilot.upstream import Params, messaging
 
 
 def fill_plan(msg, out: FollowOutput) -> None:
@@ -27,8 +28,10 @@ def fill_plan(msg, out: FollowOutput) -> None:
 
 class FollowPublisher:
   @classmethod
-  def create(cls, CP):
-    return cls(CP) if manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND else None
+  def create(cls, CP, params=None):
+    if not (manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND):
+      return None
+    return cls(CP) if following(params if params is not None else Params()) else None
 
   def __init__(self, CP):
     self.follow = FollowPlanner(CP)

@@ -1,12 +1,14 @@
 """Runs inside card: hands the latest follow plan to the car controller and shows the follow set speed.
 
-Follow cruise runs only while every process carrying it is healthy: once any of them reports it switched off,
-no more commands are sent, so the car never follows without its alerts.
+Follow cruise runs only while its toggle is on and every process carrying it is healthy: once any of them reports
+it switched off, no more commands are sent, so the car never follows without its alerts. The set speed is shown
+either way.
 """
 import time
 
 from opendbc.car.avante_md.follow.command import FollowCommand
 from openpilot.mdpilot import manifest
+from openpilot.mdpilot.features.follow_cruise.toggle import following
 from openpilot.mdpilot.runtime.health import read_status
 from openpilot.mdpilot.upstream import CV, DT_MDL, V_CRUISE_UNSET, Params, messaging
 
@@ -26,7 +28,7 @@ class FollowCard:
     self.sm = messaging.SubMaster(['followPlanMD'])
     self.params = params if params is not None else Params()
     self.frame = 0
-    self.switched_off = False
+    self.switched_off = not following(self.params)
 
   def update_car_state(self, CS) -> None:
     if CS.cruiseState.speed > 0.:
