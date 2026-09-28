@@ -12,6 +12,7 @@ OVERRIDES = {
   "selfdrived": ("openpilot.mdpilot.processes.selfdrived", ("follow_cruise", "forward_watch")),
   "torqued": ("openpilot.mdpilot.processes.torqued", ("torque_learning",)),
   "hardwared": ("openpilot.mdpilot.processes.hardwared", ("power",)),
+  "ui": ("openpilot.mdpilot.processes.ui", ("follow_cruise",)),
 }
 FORWARDWATCHD = "openpilot.mdpilot.processes.forwardwatchd"
 

@@ -1,6 +1,7 @@
-"""Runs inside card: hands the latest follow plan to the car controller and shows the follow set speed.
+"""Runs inside card: hands the latest follow plan to the car controller, applies the cruise mode, and shows the set
+speed the car controller estimates for the ECM.
 
-Follow cruise runs only while its toggle is on and every process carrying it is healthy: once any of them reports
+Gap assist runs only while its mode is chosen and every process carrying it is healthy: once any of them reports
 it switched off, no more commands are sent, so the car never follows without its alerts. The set speed is shown
 either way.
 """
@@ -8,7 +9,7 @@ import time
 
 from opendbc.car.avante_md.follow.command import FollowCommand
 from openpilot.mdpilot import manifest
-from openpilot.mdpilot.features.follow_cruise.toggle import following
+from openpilot.mdpilot.features.follow_cruise.mode import GAP_ASSIST, OFF, cruise_mode
 from openpilot.mdpilot.runtime.health import read_status
 from openpilot.mdpilot.upstream import CV, DT_MDL, V_CRUISE_UNSET, Params, messaging
 
@@ -17,25 +18,35 @@ MIN_PLAN_SPEED = 0.1
 # The plan arrives at model rate; polling on every control cycle costs more than it gains.
 POLL_EVERY = 5
 STATUS_EVERY = 100  # control frames
+# The shown set speed is rounded and moves once the estimate is this far from it.
+DISPLAY_STEP_KPH = 0.75
 
 
 class FollowCard:
   @classmethod
-  def create(cls, CP):
-    return cls() if manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND else None
+  def create(cls, CP, CI=None):
+    return cls(CI=CI) if manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND else None
 
-  def __init__(self, params=None):
+  def __init__(self, params=None, CI=None):
     self.sm = messaging.SubMaster(['followPlanMD'])
     self.params = params if params is not None else Params()
     self.frame = 0
-    self.switched_off = not following(self.params)
+    self.mode = cruise_mode(self.params)
+    self.switched_off = self.mode != GAP_ASSIST
+    self.controller = CI.CC if CI is not None else None
+    self.shown_kph: float | None = None
+    if self.controller is not None:
+      self.controller.set_cruise_enabled(self.mode != OFF)
 
   def update_car_state(self, CS) -> None:
     if CS.cruiseState.speed > 0.:
       CS.vCruise = float(CS.cruiseState.speed * CV.MS_TO_KPH)
-      CS.vCruiseCluster = float(CS.cruiseState.speedCluster * CV.MS_TO_KPH)
-    else:
-      CS.vCruiseCluster = float(V_CRUISE_UNSET)
+    estimate = self.controller.cruise_display_kph() if self.controller is not None else None
+    if estimate is None:
+      self.shown_kph = None
+    elif self.shown_kph is None or abs(estimate - self.shown_kph) >= DISPLAY_STEP_KPH:
+      self.shown_kph = float(round(estimate))
+    CS.vCruiseCluster = self.shown_kph if self.shown_kph is not None else float(V_CRUISE_UNSET)
 
   def command(self) -> FollowCommand | None:
     if self.frame % STATUS_EVERY == 0 and not self.switched_off:

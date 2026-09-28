@@ -37,8 +37,8 @@ class NoStatusParams:
     return None
 
 
-def make_card(sm):
-  card = FollowCard.create(car_params())
+def make_card(sm, CI=None):
+  card = FollowCard.create(car_params(), CI)
   card.sm = sm
   card.params = NoStatusParams()
   return card
@@ -47,9 +47,17 @@ def make_card(sm):
 class FakeController:
   def __init__(self):
     self.cmd = 'unset'
+    self.cruise_enabled = None
+    self.display: float | None = None
 
   def set_follow_command(self, cmd):
     self.cmd = cmd
+
+  def set_cruise_enabled(self, enabled):
+    self.cruise_enabled = enabled
+
+  def cruise_display_kph(self):
+    return self.display
 
 
 class FakeInterface:
@@ -82,8 +90,9 @@ class TestFollowCard(unittest.TestCase):
       make_card(sm).push_command(CI)
       self.assertIsNone(CI.CC.cmd)
 
-  def test_set_speed_shown_while_following(self):
-    card = make_card(FakeSubMaster())
+  def test_shown_set_speed_is_the_estimated_ecm_set_speed(self):
+    CI = FakeInterface()
+    card = make_card(FakeSubMaster(), CI)
     CS = car.CarState.new_message()
     CS.vCruise = 40.
     CS.vCruiseCluster = 40.
@@ -92,10 +101,22 @@ class TestFollowCard(unittest.TestCase):
     self.assertEqual(V_CRUISE_UNSET, CS.vCruiseCluster)
 
     CS.cruiseState.speed = 25.
-    CS.cruiseState.speedCluster = 25.5
+    CI.CC.display = 87.8
     card.update_car_state(CS)
     self.assertAlmostEqual(90., CS.vCruise, places=3)
-    self.assertAlmostEqual(91.8, CS.vCruiseCluster, places=3)
+    self.assertEqual(88., CS.vCruiseCluster)
+
+  def test_shown_set_speed_ignores_drift_below_a_step(self):
+    CI = FakeInterface()
+    card = make_card(FakeSubMaster(), CI)
+    CS = car.CarState.new_message()
+    for estimate, shown in ((99.4, 99.), (99.7, 99.), (99.9, 100.), (99.5, 100.), (97.9, 98.)):
+      CI.CC.display = estimate
+      card.update_car_state(CS)
+      self.assertEqual(shown, CS.vCruiseCluster, estimate)
+    CI.CC.display = None
+    card.update_car_state(CS)
+    self.assertEqual(V_CRUISE_UNSET, CS.vCruiseCluster)
 
   def test_the_port_controller_takes_the_command(self):
     from opendbc.car.avante_md.interface import CarInterface

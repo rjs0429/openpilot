@@ -6,7 +6,7 @@ def build(Car):
   class CarMd(Car):
     def __init__(self, *args, **kwargs):
       super().__init__(*args, **kwargs)
-      self.md_follow = guarded(FollowCard.create, "follow_cruise", "card", self.CP)
+      self.md_follow = guarded(FollowCard.create, "follow_cruise", "card", self.CP, self.CI)
 
     def state_update(self):
       CS, RD = super().state_update()

@@ -17,6 +17,11 @@ CLASS_SWAPS = {
   "openpilot.selfdrive.selfdrived.selfdrived": "SelfdriveD",
 }
 
+# upstream module -> class it builds by global name while the UI lays out, which processes/ui.py swaps for a subclass
+UI_CLASS_SWAPS = {
+  "openpilot.selfdrive.ui.mici.onroad.augmented_road_view": ("HudRenderer", "AugmentedRoadView.__init__"),
+}
+
 # (module, class, method, parameters) the fork overrides or calls
 METHODS = (
   ("openpilot.selfdrive.car.card", "Car", "state_update", ["self"]),
@@ -27,6 +32,8 @@ METHODS = (
   ("openpilot.selfdrive.selfdrived.alertmanager", "AlertManager", "add_many", ["self", "frame", "alerts"]),
   ("openpilot.selfdrive.selfdrived.events", "Alert", "__init__", ["self", "alert_text_1", "alert_text_2", "alert_status",
    "alert_size", "priority", "visual_alert", "audible_alert", "duration", "creation_delay"]),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer", "_update_state", ["self"]),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer", "_draw_set_speed", ["self", "rect"]),
 )
 
 # (module, function or class.method, text its source must contain)
@@ -39,10 +46,15 @@ SOURCES = (
   ("openpilot.selfdrive.selfdrived.selfdrived", "SelfdriveD.step", "self.update_events(CS)"),
   ("openpilot.selfdrive.controls.plannerd", "main", "longitudinal_planner.publish(sm, pm)"),
   ("openpilot.selfdrive.locationd.torqued", "TorqueEstimator.__init__", "CP.brand in ALLOWED_CARS"),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer._update_state", "car_state.vCruiseCluster"),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer._update_state", "self.is_cruise_set ="),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer._draw_set_speed", "self._set_speed_changed_time"),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer._draw_set_speed", "self._engaged"),
+  ("openpilot.selfdrive.ui.mici.onroad.hud_renderer", "HudRenderer._render", "self._draw_set_speed(rect)"),
 )
 
 # processes the fork replaces by name
-PROCESSES = ("card", "plannerd", "selfdrived", "torqued", "hardwared")
+PROCESSES = ("card", "plannerd", "selfdrived", "torqued", "hardwared", "ui")
 
 # services the fork subscribes to or publishes
 SERVICES = ("carState", "carControl", "radarState", "modelV2", "driverMonitoringState", "followPlanMD", "forwardWatchState")
@@ -53,8 +65,8 @@ PLANNERD_SERVICES = ("carState", "carControl", "radarState", "modelV2", "selfdri
 # (schema struct path, fields the fork reads or writes)
 FIELDS = (
   ("car.CarParams", ("brand", "notCar")),
-  ("car.CarState", ("vEgo", "standstill", "gearShifter", "leftBlinker", "rightBlinker", "steeringAngleDeg", "vCruise",
-                    "vCruiseCluster", "cruiseState")),
+  ("car.CarState", ("vEgo", "vEgoCluster", "aEgo", "standstill", "gearShifter", "leftBlinker", "rightBlinker",
+                    "steeringAngleDeg", "vCruise", "vCruiseCluster", "cruiseState")),
   ("car.CarState.CruiseState", ("speed", "speedCluster")),
   ("car.CarControl", ("orientationNED",)),
   ("log.RadarState", ("leadOne",)),
@@ -91,7 +103,7 @@ def _attr(obj, dotted: str):
 
 def check_imports() -> None:
   for name in ("openpilot.mdpilot.upstream", "openpilot.mdpilot.upstream.planner", "openpilot.mdpilot.upstream.alerts",
-               "openpilot.mdpilot.upstream.ui"):
+               "openpilot.mdpilot.upstream.ui", *UI_CLASS_SWAPS):
     importlib.import_module(name)
 
 
@@ -100,6 +112,10 @@ def check_class_swaps() -> None:
     mod = importlib.import_module(module)
     assert inspect.isclass(getattr(mod, cls, None)), f"{module} no longer defines {cls}"
     assert cls in mod.main.__code__.co_names, f"{module}.main() no longer builds {cls} by its global name"
+  for module, (cls, builder) in UI_CLASS_SWAPS.items():
+    mod = importlib.import_module(module)
+    assert inspect.isclass(getattr(mod, cls, None)), f"{module} no longer imports {cls}"
+    assert f"{cls}()" in inspect.getsource(_attr(mod, builder)), f"{module}.{builder} no longer builds {cls} by its global name"
 
 
 def check_methods() -> None:
@@ -207,7 +223,8 @@ def check_planner() -> None:
 def check_car_controller() -> None:
   from opendbc.car.avante_md.interface import CarInterface
   CI = CarInterface(CarInterface.get_non_essential_params("AVANTE_MD_2012"))
-  assert callable(getattr(CI.CC, "set_follow_command", None)), "the car port no longer takes a follow command"
+  for method in ("set_follow_command", "set_cruise_enabled", "cruise_display_kph"):
+    assert callable(getattr(CI.CC, method, None)), f"the car port controller has no {method}"
 
 
 def check_power_monitoring() -> None:

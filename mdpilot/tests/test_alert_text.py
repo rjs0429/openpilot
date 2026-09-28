@@ -34,7 +34,8 @@ def fork_alerts():
   every_feature = dict.fromkeys((*manifest.FEATURES, "processes", "ui", "status"), "somewhere")
   status = StatusAlert(FakeParams({"MdpilotStatus": json.dumps(every_feature)}))
   status.update()
-  return [follow.decel_limit_alert, follow.plan_lost_alert, ForwardWatchAlerts(FakeParams({})).ready_alert, *status.alerts()]
+  return [follow.decel_limit_alert, follow.plan_lost_alert, follow.accel_alert, ForwardWatchAlerts(FakeParams({})).ready_alert,
+          *status.alerts()]
 
 
 class TestForkAlertText(unittest.TestCase):

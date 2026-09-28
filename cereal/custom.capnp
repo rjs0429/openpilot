@@ -53,6 +53,9 @@ struct FollowPlanMD @0xaedffd8f31e7b55d {
   fcw @13 :Bool;
   aNeeded @14 :Float32;
   followGap @15 :Float32;
+  closing @16 :Float32;
+  closingTrend @17 :Float32;
+  accelRequest @18 :Bool;
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

@@ -3,16 +3,17 @@ import unittest  # noqa: TID251
 import cereal.messaging as messaging
 from cereal import car
 from openpilot.common.realtime import DT_CTRL
-from openpilot.mdpilot.features.follow_cruise.alerts import PLAN_LOST_TIME, FollowAlerts
+from openpilot.mdpilot.features.follow_cruise.alerts import ACCEL_PROMPT_TIME, ACCEL_REARM_TIME, PLAN_LOST_TIME, FollowAlerts
 from openpilot.selfdrive.selfdrived.events import ET, EventName, Events
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager
 
 
 class FakeSubMaster:
-  def __init__(self, level, active=True, alive=True):
+  def __init__(self, level, active=True, alive=True, accel=False):
     msg = messaging.new_message('followPlanMD')
     msg.followPlanMD.active = active
     msg.followPlanMD.alertLevel = level
+    msg.followPlanMD.accelRequest = accel
     self.data = {'followPlanMD': msg.followPlanMD.as_reader()}
     self.alive = {'followPlanMD': alive}
     self.valid = {'followPlanMD': True}
@@ -95,3 +96,24 @@ class TestFollowAlerts(unittest.TestCase):
 
   def test_other_brands_get_nothing(self):
     self.assertIsNone(FollowAlerts.create(car_params('toyota')))
+
+  def test_speed_up_prompt_shows_once_per_request(self):
+    fa = make_alerts(0, accel=True)
+    for _ in range(round(ACCEL_PROMPT_TIME / DT_CTRL) - 1):
+      fa.update_events(Events(), carstate())
+      self.assertEqual([fa.accel_alert], fa.alerts())
+    for _ in range(round(ACCEL_REARM_TIME / DT_CTRL)):
+      fa.update_events(Events(), carstate())
+    self.assertEqual([], fa.alerts())
+
+    fa.sm = FakeSubMaster(0, accel=False)
+    for _ in range(round(ACCEL_REARM_TIME / DT_CTRL)):
+      fa.update_events(Events(), carstate())
+    fa.sm = FakeSubMaster(0, accel=True)
+    fa.update_events(Events(), carstate())
+    self.assertEqual([fa.accel_alert], fa.alerts())
+
+  def test_decel_prompt_outranks_the_speed_up_prompt(self):
+    fa = make_alerts(1, accel=True)
+    fa.update_events(Events(), carstate())
+    self.assertEqual([fa.decel_limit_alert], fa.alerts())

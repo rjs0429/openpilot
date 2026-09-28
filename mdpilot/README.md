@@ -10,10 +10,10 @@ Everything this fork adds on top of upstream openpilot, for the 2012 Hyundai Ava
 | `manifest.py` | Feature switches, the fork's lines in upstream files (`HOOKS`), the upstream base commit |
 | `hooks.py` | The only fork module upstream files import. Standard library only; falls back to stock on failure |
 | `upstream/` | Where features and ui reach upstream. `contract.py` checks what the fork assumes about upstream |
-| `processes/` | Attach points: swap an upstream class (card, plannerd, selfdrived) or patch module values (torqued, hardwared), then run upstream `main()`. These may touch upstream directly |
+| `processes/` | Attach points: swap an upstream class (card, plannerd, selfdrived, the mici HUD in ui) or patch module values (torqued, hardwared), then run upstream `main()`. These may touch upstream directly |
 | `features/` | The features. They import upstream only through `upstream/` |
 | `runtime/` | Failure isolation (`guard.py`), the `MdpilotStatus` record (`health.py`) and its alert |
-| `ui/` | Toggles added to the mici settings page |
+| `ui/` | Settings added to the mici settings page, and the onroad set speed (`hud.py`) |
 | `scripts/fork_update.sh` | Resets `/data/openpilot` to the device branch, builds and reboots the device |
 | `tests/` | `unittest.TestCase` only |
 
@@ -21,7 +21,7 @@ Everything this fork adds on top of upstream openpilot, for the 2012 Hyundai Ava
 
 | Feature | Where it runs | How it attaches |
 |---|---|---|
-| `follow_cruise` | plannerd, card, selfdrived + the car port | class swap; the plan reaches the port through `CarController.set_follow_command`, valid for one cycle |
+| `follow_cruise` (gap assist) | plannerd, card, selfdrived, ui + the car port | class swap; the plan reaches the port through `CarController.set_follow_command`, valid for one cycle. The `MdCruiseMode` setting (off / cruise / gap assist) reaches it through `set_cruise_enabled`; the set speed shown is the port's estimate (`cruise_display_kph`) |
 | `forward_watch` | own process `forwardwatchd` + selfdrived | new process; alert added straight to the AlertManager |
 | `lateral_gate` | controlsd | `hooks.LateralGate` (controlsd decides and uses `latActive` in one method, so it keeps a 3-line hook) |
 | `power` | hardwared | overrides `power_monitoring` values before upstream `main()` |

@@ -5,8 +5,9 @@ import cereal.messaging as messaging
 from cereal import car, log
 from openpilot.common.realtime import DT_MDL
 from openpilot.mdpilot.features.follow_cruise.coast import coast_decel
-from openpilot.mdpilot.features.follow_cruise.planner import (COAST_MIN_DWELL, LEAD_EXIT_TIME, MIN_GAP_M, MIN_GAP_T, REACTION_T,
-                                                              FollowPlanner, LeadFilter, envelope_speed, needed_decel,
+from openpilot.mdpilot.features.follow_cruise.planner import (ACCEL_REQUEST_TIME, COAST_MIN_DWELL, LEAD_ENTER_TIME, LEAD_EXIT_TIME,
+                                                              MIN_GAP_M, MIN_GAP_T, REACTION_T, TREND_COAST_THW, FollowPlanner,
+                                                              GapTrend, LeadFilter, envelope_speed, needed_decel,
                                                               required_decel)
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
@@ -124,11 +125,16 @@ class TestLeadFilter(unittest.TestCase):
       f.update(self._lead(True), 20., DT_MDL)
     assert f.present
 
-  def test_far_lead_needs_high_confidence(self):
+  def test_far_lead_needs_more_confidence(self):
     f = LeadFilter()
     for _ in range(40):
+      f.update(self._lead(True, d_rel=80., prob=0.55), 20., DT_MDL)
+    assert not f.present
+    for _ in range(round(LEAD_ENTER_TIME[1] / DT_MDL) - 1):
       f.update(self._lead(True, d_rel=80., prob=0.7), 20., DT_MDL)
     assert not f.present
+    f.update(self._lead(True, d_rel=80., prob=0.7), 20., DT_MDL)
+    assert f.present
 
   def test_brief_dropout_is_bridged(self):
     f = LeadFilter()
@@ -333,3 +339,98 @@ class TestWithPortCarParams(unittest.TestCase):
     out = run(follower, Scene(v_ego=25., v_cruise=25.), 2.)
     self.assertTrue(out.active)
     self.assertAlmostEqual(25., out.v_target, delta=0.5)
+
+
+def run_gap(follower, scene, d_rel, closing, seconds, v_lead):
+  """The gap shrinks at `closing` m/s while vision reports the lead at `v_lead`."""
+  out = None
+  for _ in range(round(seconds / DT_MDL)):
+    scene.set_lead(d_rel, v_lead)
+    out = follower.update(scene.view())
+    d_rel -= closing * DT_MDL
+  return out, d_rel
+
+
+class TestGapTrend(unittest.TestCase):
+  def test_learns_the_closing_speed_from_the_gap(self):
+    trend = GapTrend()
+    d = 60.
+    for _ in range(round(4. / DT_MDL)):
+      trend.update(d, 0., 0., DT_MDL)
+      d -= 3. * DT_MDL
+    assert 1.5 < trend.closing_bound < 3.
+
+  def test_a_jump_in_the_gap_is_another_car(self):
+    trend = GapTrend()
+    for _ in range(40):
+      trend.update(60., 0., 0., DT_MDL)
+    trend.update(30., -2., 0., DT_MDL)
+    self.assertEqual(-2., trend.rate)
+    self.assertEqual(30., trend.gap)
+
+  def test_no_bound_before_a_track(self):
+    self.assertIsNone(GapTrend().closing_bound)
+
+  def test_the_cars_own_braking_shows_at_once(self):
+    trend = GapTrend()
+    d = 50.
+    for _ in range(round(5. / DT_MDL)):
+      trend.update(d, 0., 0., DT_MDL)
+      d -= 2. * DT_MDL
+    closing, rate = 2., -2.
+    for _ in range(round(1. / DT_MDL)):
+      trend.update(d, 0., -0.5, DT_MDL)
+      rate += 0.5 * DT_MDL
+      d += rate * DT_MDL
+    self.assertAlmostEqual(closing - 0.5, -trend.rate, delta=0.2)
+
+
+class TestFollowPlannerGapTrend(unittest.TestCase):
+  def test_approach_vision_misses_is_coasted_within_the_gap_trend_range(self):
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    follower = Follower()
+    out, d = run_gap(follower, scene, 60., 3., 1., 27.8)
+    for _ in range(round(4. / DT_MDL)):
+      if out.coast_request:
+        break
+      out, d = run_gap(follower, scene, d, 3., DT_MDL, 27.8)
+    assert out.coast_request
+    assert d / 27.8 < TREND_COAST_THW
+    assert d > 45.
+    assert out.closing > 1.5
+
+  def test_same_approach_without_the_gap_trend_waits(self):
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    scene.set_lead(55., 27.8)
+    assert not run(Follower(), scene, 3.).coast_request
+
+  def test_far_approach_is_trimmed_not_coasted(self):
+    scene = Scene(v_ego=27.8, v_cruise=27.8)
+    out, d = run_gap(Follower(), scene, 90., 4., 4., 27.8)
+    assert d / 27.8 > TREND_COAST_THW
+    assert not out.coast_request
+    assert out.lead_limited
+    assert out.v_target < 27.5
+
+
+class TestAccelRequest(unittest.TestCase):
+  @staticmethod
+  def _scene(shown_kph, lead=None):
+    scene = Scene(v_ego=25., v_cruise=27.8)
+    scene.cs.vEgoCluster = 25.
+    scene.cs.vCruiseCluster = shown_kph
+    if lead is not None:
+      scene.set_lead(*lead)
+    return scene
+
+  def test_asks_for_the_pedal_when_the_plan_wants_more_than_the_set_speed(self):
+    follower = Follower()
+    scene = self._scene(90.)
+    assert not run(follower, scene, ACCEL_REQUEST_TIME - 0.5).accel_request
+    assert run(follower, scene, 1.).accel_request
+
+  def test_quiet_without_a_set_speed_near_a_lead_or_on_the_pedal(self):
+    for name, scene in (("no set speed", self._scene(255.)), ("close lead", self._scene(90., (40., 25.))),
+                        ("pedal", self._scene(88.))):
+      with self.subTest(name):
+        assert not run(Follower(), scene, ACCEL_REQUEST_TIME + 1.).accel_request

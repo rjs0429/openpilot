@@ -7,7 +7,7 @@ from unittest import mock  # noqa: TID251
 
 from cereal import car
 from openpilot.mdpilot import hooks
-from openpilot.mdpilot.features.follow_cruise.toggle import TOGGLE as FOLLOW_TOGGLE
+from openpilot.mdpilot.features.follow_cruise.mode import GAP_ASSIST, PARAM as MODE_PARAM
 from openpilot.mdpilot.processes import card_md, selfdrived_md
 from openpilot.mdpilot.runtime import guard, health
 from openpilot.mdpilot.runtime.status_alert import StatusAlert
@@ -22,7 +22,7 @@ def boom(*args, **kwargs):
 
 
 class FakeParams:
-  DEFAULTS = {FOLLOW_TOGGLE: True}
+  DEFAULTS = {MODE_PARAM: GAP_ASSIST}
 
   def __init__(self, status=None):
     self.store = {} if status is None else {health.STATUS_PARAM: json.dumps(status)}

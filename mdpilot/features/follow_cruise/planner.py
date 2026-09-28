@@ -5,12 +5,16 @@ The target speed is therefore the fastest the car may close in on the lead while
 still brings it down to the lead's speed at the following distance: the set speed is trimmed down to it, and
 once the lead needs most of what coasting gives, the cruise is canceled into a coast. The upstream plan is
 still solved alongside for its collision warning.
+
+The vision lead's speed shows only part of how fast the car closes in; the gap's own trend shows the rest. Within
+a short time gap, where the gap is measured well enough, the lead is taken to be as slow as that trend is sure of.
 """
 import math
 from dataclasses import dataclass
 
+from opendbc.car.avante_md.follow.policy import cluster_from_wheel
 from openpilot.mdpilot.features.follow_cruise.coast import coast_decel
-from openpilot.mdpilot.upstream import DT_MDL, lead_present
+from openpilot.mdpilot.upstream import CV, DT_MDL, V_CRUISE_UNSET, lead_present
 from openpilot.mdpilot.upstream import planner as upstream_planner
 
 # Buttons, the ECM and the throttle take about this long to answer.
@@ -37,11 +41,31 @@ COAST_MIN_DWELL = 1.5
 COAST_LEAD_MARGIN = 0.5
 
 LEAD_NEAR_M = 50.
-LEAD_ENTER_PROB = (0.5, 0.9)  # near, far
-LEAD_ENTER_TIME = (0.25, 1.0)
+LEAD_ENTER_PROB = (0.5, 0.6)  # near, far
+LEAD_ENTER_TIME = (0.25, 0.5)
 LEAD_EXIT_TIME = (1.5, 3.0)
 LEAD_D_TAU = 0.25
 LEAD_V_TAU = 0.5
+
+# The gap trend counts for trimming within TREND_TRIM_THW and for coasting and alerts within TREND_COAST_THW.
+TREND_TRIM_THW = 3.0
+TREND_COAST_THW = 2.2
+TREND_ACCEL_NOISE = 0.5  # m/s^2, how fast the lead may change speed
+TREND_GAP_NOISE_M = 0.5
+TREND_GAP_NOISE_PER_M = 0.04
+TREND_RATE_INIT = 2.0  # m/s
+# A gap step this large is another car.
+TREND_JUMP_M = 5.
+TREND_JUMP_PER_M = 0.2
+TREND_TAU = 0.5
+
+# Gap assist never raises the set speed itself: a target this far above the shown set speed for this long, with
+# no lead closer than ACCEL_MIN_THW, asks the driver to speed up with the pedal.
+ACCEL_REQUEST_KPH = 3.
+ACCEL_REQUEST_TIME = 3.
+ACCEL_MIN_THW = 1.8
+# Already this far above the set speed, the driver is on the pedal.
+ACCEL_PEDAL_KPH = 1.5
 
 GRADE_TAU = 1.0
 GRADE_MAX_PCT = 8.
@@ -104,6 +128,48 @@ class LeadFilter:
         self._restart = True
 
 
+class GapTrend:
+  """How fast the gap to the lead closes, from the gap alone: a Kalman filter on the vision gap whose rate follows the
+  car's own acceleration and takes the lead's as noise."""
+
+  def __init__(self):
+    self.gap = 0.
+    self.rate = 0.
+    self._p = None  # covariance (gap, gap-rate, rate)
+
+  def reset(self) -> None:
+    self._p = None
+
+  @property
+  def closing_bound(self) -> float | None:
+    """The closing speed the trend is sure of: the estimate less one standard deviation."""
+    return -self.rate - math.sqrt(self._p[2]) if self._p is not None else None
+
+  def update(self, d_rel: float, rel_speed: float, a_ego: float, dt: float) -> None:
+    """rel_speed (the lead's speed less the car's, as vision sees it) only starts a new track."""
+    r = (TREND_GAP_NOISE_M + TREND_GAP_NOISE_PER_M * d_rel) ** 2
+    if self._p is not None:
+      p00, p01, p11 = self._p
+      q = TREND_ACCEL_NOISE ** 2
+      self.gap += self.rate * dt - 0.5 * a_ego * dt ** 2
+      self.rate -= a_ego * dt
+      p00 += dt * (2. * p01 + dt * p11) + q * dt ** 3 / 3.
+      p01 += dt * p11 + q * dt ** 2 / 2.
+      p11 += q * dt
+      if abs(d_rel - self.gap) > max(TREND_JUMP_M, TREND_JUMP_PER_M * d_rel):
+        self._p = None
+      else:
+        s = p00 + r
+        k0, k1 = p00 / s, p01 / s
+        err = d_rel - self.gap
+        self.gap += k0 * err
+        self.rate += k1 * err
+        self._p = ((1. - k0) * p00, (1. - k0) * p01, p11 - k1 * p01)
+    if self._p is None:
+      self.gap, self.rate = d_rel, rel_speed
+      self._p = (r, 0., TREND_RATE_INIT ** 2)
+
+
 @dataclass
 class FollowOutput:
   active: bool = False
@@ -122,6 +188,9 @@ class FollowOutput:
   fcw: bool = False
   a_needed: float = 0.
   follow_gap: float = 0.
+  closing: float = 0.
+  closing_trend: float = 0.
+  accel_request: bool = False
 
 
 def required_decel(v_ego: float, d_rel: float, v_lead: float) -> float:
@@ -164,23 +233,29 @@ class FollowPlanner:
   def __init__(self, CP):
     self.CP = CP
     self.lead = LeadFilter()
+    self.trend = GapTrend()
     self.out = FollowOutput()
     self.grade_pct = 0.
     self._grade_init = False
+    self._trend_closing: float | None = None
     self._coast = False
     self._coast_timer = 0.
     self._coast_dwell = COAST_MIN_DWELL
     self._decel_timer = 0.
     self._collision_hold = 0.
+    self._accel_timer = 0.
     self._v_target: float | None = None
 
   def reset(self) -> None:
     self.lead = LeadFilter()
+    self.trend.reset()
+    self._trend_closing = None
     self._coast = False
     self._coast_timer = 0.
     self._coast_dwell = COAST_MIN_DWELL
     self._decel_timer = 0.
     self._collision_hold = 0.
+    self._accel_timer = 0.
     self._v_target = None
 
   def update(self, sm, planner, dt: float = DT_MDL) -> FollowOutput:
@@ -195,16 +270,22 @@ class FollowPlanner:
     v_ego = CS.vEgo
     lead_msg = sm['radarState'].leadOne
     self.lead.update(lead_msg, v_ego, dt)
+    self._update_trend(lead_msg, v_ego, CS.aEgo, dt)
     lead = self.lead.present
     a_coast = coast_decel(v_ego, self.grade_pct)
+    t_follow = upstream_planner.follow_time(sm['selfdriveState'].personality)
+    thw = self.lead.d_rel / max(v_ego, 1.) if lead else math.inf
+    v_lead = self._lead_speed(v_ego, thw, TREND_COAST_THW)
 
-    gap = following_gap(self.lead.v_lead, upstream_planner.follow_time(sm['selfdriveState'].personality)) if lead else 0.
-    room = closing_room(v_ego, self.lead.d_rel, self.lead.v_lead, gap) if lead else math.inf
-    a_needed = needed_decel(v_ego, self.lead.v_lead, room) if lead else 0.
+    gap = following_gap(v_lead, t_follow) if lead else 0.
+    room = closing_room(v_ego, self.lead.d_rel, v_lead, gap) if lead else math.inf
+    a_needed = needed_decel(v_ego, v_lead, room) if lead else 0.
 
     v_goal = v_cruise
     if lead:
-      v_goal = min(v_goal, envelope_speed(self.lead.v_lead, room, TRIM_SHARE * a_coast))
+      v_lead_trim = self._lead_speed(v_ego, thw, TREND_TRIM_THW)
+      room_trim = closing_room(v_ego, self.lead.d_rel, v_lead_trim, following_gap(v_lead_trim, t_follow))
+      v_goal = min(v_goal, envelope_speed(v_lead_trim, room_trim, TRIM_SHARE * a_coast))
       if not lead_present(lead_msg) and self._v_target is not None:
         v_goal = min(v_goal, self._v_target)
     lead_limited = v_goal < v_cruise
@@ -215,35 +296,62 @@ class FollowPlanner:
     v_target = self._v_target
     a_target = max(-a_coast, min(ACCEL_MAX, (v_target - v_ego) / ACCEL_TAU))
 
-    a_required = required_decel(v_ego, self.lead.d_rel, self.lead.v_lead) if lead else 0.
+    a_required = required_decel(v_ego, self.lead.d_rel, v_lead) if lead else 0.
     self._decel_timer = self._decel_timer + dt if a_required > max(a_coast, ALERT_MIN_DECEL) else 0.
     over_coast = self._decel_timer >= ALERT_DECEL_TIME - 1e-6
-    closing = self.lead.present and v_ego > self.lead.v_lead
-    ttc = self.lead.d_rel / (v_ego - self.lead.v_lead) if closing else math.inf
+    closing = lead and v_ego > v_lead
+    ttc = self.lead.d_rel / (v_ego - v_lead) if closing else math.inf
     collision = (closing and lead_present(lead_msg) and self.lead.prob >= COLLISION_PROB and
                  (ttc < COLLISION_TTC or self.lead.d_rel < COLLISION_HEADWAY * v_ego))
     fcw = upstream_planner.fcw(planner)
     self._collision_hold = COLLISION_HOLD if (collision or fcw) else max(0., self._collision_hold - dt)
     alert_level = 2 if self._collision_hold > 0. else (1 if over_coast else 0)
 
-    self._update_coast(lead, a_needed / a_coast, v_ego, alert_level > 0, dt)
+    self._update_coast(lead, a_needed / a_coast, v_ego, v_lead, alert_level > 0, dt)
+    accel_request = self._update_accel_request(CS, v_target, lead, thw, dt)
 
     self.out = FollowOutput(
       active=True, v_cruise=v_cruise, v_target=v_target, a_target=a_target, coast_request=self._coast,
       alert_level=alert_level, lead_limited=lead_limited, lead_valid=lead, d_rel=self.lead.d_rel,
       v_lead=self.lead.v_lead, a_required=min(a_required, 10.), a_coast_limit=a_coast, grade=self.grade_pct, fcw=fcw,
-      a_needed=min(a_needed, 10.), follow_gap=gap,
+      a_needed=min(a_needed, 10.), follow_gap=gap, closing=v_ego - v_lead if lead else 0.,
+      closing_trend=self._trend_closing if self._trend_closing is not None else 0., accel_request=accel_request,
     )
     return self.out
 
-  def _update_coast(self, lead: bool, share: float, v_ego: float, alerting: bool, dt: float) -> None:
+  def _update_trend(self, lead, v_ego: float, a_ego: float, dt: float) -> None:
+    if not lead_present(lead):
+      self.trend.reset()
+      self._trend_closing = None
+      return
+    self.trend.update(lead.dRel, lead.vLead - v_ego, a_ego, dt)
+    bound = self.trend.closing_bound
+    if self._trend_closing is None or bound is None:
+      self._trend_closing = bound
+    else:
+      self._trend_closing = _lowpass(self._trend_closing, bound, TREND_TAU, dt)
+
+  def _lead_speed(self, v_ego: float, thw: float, max_thw: float) -> float:
+    if thw < max_thw and self._trend_closing is not None:
+      return min(self.lead.v_lead, v_ego - self._trend_closing)
+    return self.lead.v_lead
+
+  def _update_accel_request(self, CS, v_target: float, lead: bool, thw: float, dt: float) -> bool:
+    shown = CS.vCruiseCluster
+    target = cluster_from_wheel(v_target * CV.MS_TO_KPH)
+    wanted = (0. < shown < V_CRUISE_UNSET and target >= shown + ACCEL_REQUEST_KPH and
+              CS.vEgoCluster * CV.MS_TO_KPH < shown + ACCEL_PEDAL_KPH and (not lead or thw >= ACCEL_MIN_THW))
+    self._accel_timer = self._accel_timer + dt if wanted else 0.
+    return self._accel_timer >= ACCEL_REQUEST_TIME - 1e-6
+
+  def _update_coast(self, lead: bool, share: float, v_ego: float, v_lead: float, alerting: bool, dt: float) -> None:
     self._coast_dwell += dt
-    caught = not lead or v_ego <= self.lead.v_lead + COAST_LEAD_MARGIN
+    caught = not lead or v_ego <= v_lead + COAST_LEAD_MARGIN
     if not self._coast:
       if alerting and lead:
         self._set_coast(True)
         return
-      want = lead and v_ego - self.lead.v_lead >= COAST_MIN_CLOSING and share >= COAST_SHARE
+      want = lead and v_ego - v_lead >= COAST_MIN_CLOSING and share >= COAST_SHARE
       self._coast_timer = self._coast_timer + dt if want else 0.
       if self._coast_timer >= COAST_ENTER_TIME - 1e-6 and self._coast_dwell >= COAST_MIN_DWELL:
         self._set_coast(True)
