@@ -3,7 +3,8 @@ import unittest  # noqa: TID251
 import cereal.messaging as messaging
 from cereal import car
 from openpilot.common.realtime import DT_CTRL
-from openpilot.mdpilot.features.follow_cruise.alerts import ACCEL_PROMPT_TIME, ACCEL_REARM_TIME, PLAN_LOST_TIME, FollowAlerts
+from openpilot.mdpilot.features.follow_cruise.alerts import ACCEL_PROMPT_TIME, ACCEL_REARM_TIME, CRUISE_OFF_TIME, \
+                                                           PLAN_LOST_TIME, CruiseOffAlert, FollowAlerts
 from openpilot.selfdrive.selfdrived.events import ET, EventName, Events
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager
 
@@ -117,3 +118,57 @@ class TestFollowAlerts(unittest.TestCase):
     fa = make_alerts(1, accel=True)
     fa.update_events(Events(), carstate())
     self.assertEqual([fa.decel_limit_alert], fa.alerts())
+
+
+def driving(armed=True, **lost):
+  CS = car.CarState.new_message()
+  CS.cruiseState.speed = 25. if armed else 0.
+  CS.gearShifter = car.CarState.GearShifter.drive
+  CS.canValid = True
+  for field, value in lost.items():
+    setattr(CS, field, value)
+  return CS.as_reader()
+
+
+class TestCruiseOffAlert(unittest.TestCase):
+  def _ended(self, **lost):
+    alert = CruiseOffAlert.create(car_params())
+    alert.update(driving())
+    alert.update(driving(armed=False, **lost))
+    return alert
+
+  def test_names_the_lost_prerequisite(self):
+    for lost, text in (({'parkingBrake': True}, "Parking Brake Engaged"),
+                       ({'gearShifter': car.CarState.GearShifter.neutral}, "Gear Not D"),
+                       ({'doorOpen': True}, "Door Open"),
+                       ({'seatbeltUnlatched': True}, "Seatbelt Unlatched"),
+                       ({'steerFaultTemporary': True}, "Steering or ESC Unavailable"),
+                       ({'doorOpen': True, 'parkingBrake': True}, "Parking Brake Engaged")):
+      with self.subTest(lost=lost):
+        alerts = self._ended(**lost).alerts()
+        self.assertEqual(1, len(alerts))
+        self.assertEqual(text, alerts[0].alert_text_2)
+
+  def test_quiet_when_every_prerequisite_held(self):
+    self.assertEqual([], self._ended().alerts())
+    self.assertEqual([], self._ended(gearShifter=car.CarState.GearShifter.sport).alerts())
+
+  def test_quiet_while_can_is_invalid(self):
+    self.assertEqual([], self._ended(canValid=False, steerFaultTemporary=True, doorOpen=True).alerts())
+
+  def test_quiet_while_the_session_goes_on(self):
+    alert = CruiseOffAlert.create(car_params())
+    for _ in range(10):
+      alert.update(driving(doorOpen=True))
+    self.assertEqual([], alert.alerts())
+
+  def test_shows_for_a_while(self):
+    alert = self._ended(doorOpen=True)
+    for _ in range(round(CRUISE_OFF_TIME / DT_CTRL)):
+      self.assertEqual(1, len(alert.alerts()))
+      alert.update(driving(armed=False))
+    self.assertEqual([], alert.alerts())
+
+  def test_runs_only_on_this_car(self):
+    self.assertIsNotNone(CruiseOffAlert.create(car_params()))
+    self.assertIsNone(CruiseOffAlert.create(car_params('toyota')))

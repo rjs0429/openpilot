@@ -66,7 +66,8 @@ PLANNERD_SERVICES = ("carState", "carControl", "radarState", "modelV2", "selfdri
 FIELDS = (
   ("car.CarParams", ("brand", "notCar")),
   ("car.CarState", ("vEgo", "vEgoCluster", "aEgo", "standstill", "gearShifter", "leftBlinker", "rightBlinker",
-                    "steeringAngleDeg", "vCruise", "vCruiseCluster", "cruiseState")),
+                    "steeringAngleDeg", "vCruise", "vCruiseCluster", "cruiseState", "doorOpen", "seatbeltUnlatched",
+                    "parkingBrake", "steerFaultTemporary", "canValid")),
   ("car.CarState.CruiseState", ("speed", "speedCluster")),
   ("car.CarControl", ("orientationNED",)),
   ("log.RadarState", ("leadOne",)),
@@ -82,7 +83,7 @@ FIELDS = (
 
 # (schema enum path, values the fork uses)
 ENUMS = (
-  ("car.CarState.GearShifter", ("park",)),
+  ("car.CarState.GearShifter", ("park", "drive", "sport")),
   ("log.ModelDataV2.ConfidenceClass", ("green", "yellow")),
   ("log.LaneChangeState", ("off",)),
 )

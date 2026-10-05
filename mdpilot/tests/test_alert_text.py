@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 from cereal import car
 from openpilot.common.basedir import BASEDIR
 from openpilot.mdpilot import manifest
-from openpilot.mdpilot.features.follow_cruise.alerts import FollowAlerts
+from openpilot.mdpilot.features.follow_cruise.alerts import CruiseOffAlert, FollowAlerts
 from openpilot.mdpilot.features.forward_watch.alerts import ForwardWatchAlerts
 from openpilot.mdpilot.runtime.status_alert import StatusAlert
 from openpilot.selfdrive.selfdrived.events import AlertSize
@@ -35,7 +35,7 @@ def fork_alerts():
   status = StatusAlert(FakeParams({"MdpilotStatus": json.dumps(every_feature)}))
   status.update()
   return [follow.decel_limit_alert, follow.plan_lost_alert, follow.accel_alert, ForwardWatchAlerts(FakeParams({})).ready_alert,
-          *status.alerts()]
+          *CruiseOffAlert().reason_alerts, *status.alerts()]
 
 
 class TestForkAlertText(unittest.TestCase):

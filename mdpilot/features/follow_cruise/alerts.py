@@ -1,4 +1,4 @@
-"""Runs inside selfdrived: gap assist alerts.
+"""Runs inside selfdrived: gap assist alerts, and why the cruise went off.
 
 All alerts are permanent so they show whether or not steering is engaged. The collision alert reuses the
 upstream forward collision warning; the others mirror the steering saturation prompt. Gap assist never speeds the
@@ -6,7 +6,7 @@ car up itself, so when the plan wants more speed the driver is asked, quietly an
 """
 from openpilot.mdpilot import manifest
 from openpilot.mdpilot.features.follow_cruise.mode import GAP_ASSIST, cruise_mode
-from openpilot.mdpilot.upstream import DT_CTRL, Params, messaging
+from openpilot.mdpilot.upstream import DT_CTRL, Params, car, messaging
 from openpilot.mdpilot.upstream.alerts import AlertSize, AlertStatus, AudibleAlert, EventName, Priority, VisualAlert, is_mici, \
                                                permanent_alert
 
@@ -16,6 +16,17 @@ PLAN_LOST_TIME = 1.0
 ACCEL_PROMPT_TIME = 4.0
 # The prompt comes back only after the plan has stopped asking for this long.
 ACCEL_REARM_TIME = 5.0
+CRUISE_OFF_TIME = 3.0
+
+GearShifter = car.CarState.GearShifter
+# What a lost prerequisite looks like on the car state, most telling first: (check, text, mici text)
+CRUISE_OFF_REASONS = (
+  (lambda CS: CS.parkingBrake, "Parking Brake Engaged", "parking brake on"),
+  (lambda CS: CS.gearShifter not in (GearShifter.drive, GearShifter.sport), "Gear Not D", "gear not d"),
+  (lambda CS: CS.doorOpen, "Door Open", "door open"),
+  (lambda CS: CS.seatbeltUnlatched, "Seatbelt Unlatched", "seatbelt unlatched"),
+  (lambda CS: CS.steerFaultTemporary, "Steering or ESC Unavailable", "steering or esc unavailable"),
+)
 
 
 def _prompt(name: str, text: tuple[str, str], mici_text: tuple[str, str]):
@@ -76,3 +87,33 @@ class FollowAlerts:
     if self.alert_level == ALERT_DECEL_LIMIT:
       return [self.decel_limit_alert]
     return [self.accel_alert] if self.accel_frames > 0 else []
+
+
+class CruiseOffAlert:
+  """Says why the cruise went off when a lost prerequisite switched it off: the session's set speed goes away while
+  one is lost. Every mode can switch off a cruise the driver engaged. With CAN invalid the car may not have heard the
+  buttons, so it stays quiet and upstream's CAN error speaks instead."""
+  @classmethod
+  def create(cls, CP):
+    return cls() if manifest.enabled("follow_cruise") and CP.brand == manifest.BRAND else None
+
+  def __init__(self):
+    self.armed = False
+    self.frames = 0
+    self.reason = 0
+    self.reason_alerts = [permanent_alert("cruiseOffMD", ("cruise off", mici) if is_mici() else ("Cruise Off", text),
+                                          AlertStatus.userPrompt, AlertSize.mid, Priority.MID, VisualAlert.none,
+                                          AudibleAlert.prompt, 1.) for _, text, mici in CRUISE_OFF_REASONS]
+
+  def update(self, CS) -> None:
+    armed = CS.cruiseState.speed > 0.
+    lost = [i for i, (check, _, _) in enumerate(CRUISE_OFF_REASONS) if check(CS)]
+    if self.armed and not armed and lost and CS.canValid:
+      self.reason = lost[0]
+      self.frames = round(CRUISE_OFF_TIME / DT_CTRL)
+    elif self.frames > 0:
+      self.frames -= 1
+    self.armed = armed
+
+  def alerts(self) -> list:
+    return [self.reason_alerts[self.reason]] if self.frames > 0 else []
